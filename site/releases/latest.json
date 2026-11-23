@@ -1,11 +1,11 @@
 {
-  "version": "0.1.1",
-  "tag": "v0.1.1",
-  "published_at": "2026-11-23T23:25:50Z",
-  "notes": "Knack 0.1.1 is signed and notarized by Apple \u2014 it opens with a normal double-click.",
-  "release_url": "https://github.com/jondcallahan/knack/releases/tag/v0.1.1",
-  "dmg_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.1/Knack-0.1.1-arm64.dmg",
-  "zip_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.1/Knack-0.1.1-arm64.zip",
-  "zip_sha256": "19fc647fea31d8864438a5dc8ea5482c2b301919eced93f1959628537c5321be",
-  "dmg_sha256": "5dbbfc25b0d1d994b8325aefa50458160933d878a0af425f0722be1c3cd3c2e8"
+  "version": "0.1.2",
+  "tag": "v0.1.2",
+  "published_at": "2026-11-23T23:35:16Z",
+  "notes": "Knack 0.1.2: a new installer window, and clearer wording in the app.",
+  "release_url": "https://github.com/jondcallahan/knack/releases/tag/v0.1.2",
+  "dmg_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.2/Knack-0.1.2-arm64.dmg",
+  "zip_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.2/Knack-0.1.2-arm64.zip",
+  "zip_sha256": "63a2d10943078436e7ebc26cb3d2085c562845692158933436e1435668338097",
+  "dmg_sha256": "5a415499072bf690387ea84ddfa81258b88625b734a86cb42c4b4af3764497c8"
 }
