@@ -11,7 +11,9 @@ mod scan;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub use frontmatter::{Frontmatter, compose, parse as parse_frontmatter, slug};
+pub use frontmatter::{
+    Frontmatter, compose, compose_preserving, parse as parse_frontmatter, slug,
+};
 pub use ops::{SaveOutcome, create, create_many, link, save, set_enabled, trash, unlink};
 pub use scan::scan;
 
@@ -20,16 +22,27 @@ pub use scan::scan;
 pub struct Agent {
     pub id: &'static str,
     pub label: &'static str,
+    pub global_dir: &'static str,
     pub dir: &'static str,
 }
 
+impl Agent {
+    pub fn dir_for(&self, root: &RootId) -> &'static str {
+        if root.is_global() {
+            self.global_dir
+        } else {
+            self.dir
+        }
+    }
+}
+
 pub static AGENTS: &[Agent] = &[
-    Agent { id: "agents", label: ".agents", dir: ".agents/skills" },
-    Agent { id: "claude", label: "Claude Code", dir: ".claude/skills" },
-    Agent { id: "codex", label: "Codex", dir: ".codex/skills" },
-    Agent { id: "cursor", label: "Cursor", dir: ".cursor/skills" },
-    Agent { id: "gemini", label: "Gemini", dir: ".gemini/skills" },
-    Agent { id: "opencode", label: "OpenCode", dir: ".opencode/skills" },
+    Agent { id: "agents", label: ".agents", global_dir: ".agents/skills", dir: ".agents/skills" },
+    Agent { id: "claude", label: "Claude Code", global_dir: ".claude/skills", dir: ".claude/skills" },
+    Agent { id: "codex", label: "Codex", global_dir: ".codex/skills", dir: ".codex/skills" },
+    Agent { id: "cursor", label: "Cursor", global_dir: ".cursor/skills", dir: ".cursor/skills" },
+    Agent { id: "gemini", label: "Gemini", global_dir: ".gemini/skills", dir: ".gemini/skills" },
+    Agent { id: "opencode", label: "OpenCode", global_dir: ".config/opencode/skills", dir: ".opencode/skills" },
 ];
 
 /// Where skills are installed: the home folder, or a project.
@@ -87,6 +100,8 @@ pub enum Kind {
 /// folder itself or a symlink to it.
 #[derive(Debug, Clone)]
 pub struct Place {
+    pub root: RootId,
+    pub root_label: String,
     pub agent: &'static Agent,
     /// The entry in the agent's folder (`~/.claude/skills/x`).
     pub entry: PathBuf,
@@ -128,6 +143,12 @@ impl Skill {
         self.places.iter().find(|p| p.agent.id == agent)
     }
 
+    pub fn place_in(&self, root: &RootId, agent: &str) -> Option<&Place> {
+        self.places
+            .iter()
+            .find(|p| &p.root == root && p.agent.id == agent)
+    }
+
     pub fn links(&self) -> impl Iterator<Item = &Place> {
         self.places.iter().filter(|p| p.is_link)
     }
@@ -152,8 +173,11 @@ impl ScopeId {
     pub fn contains(&self, skill: &Skill) -> bool {
         match self {
             ScopeId::All => true,
-            ScopeId::Agent(id) => skill.root.is_global() && skill.place(id).is_some(),
-            ScopeId::Project(path) => skill.root == RootId::Project(path.clone()),
+            ScopeId::Agent(id) => skill.places.iter().any(|p| p.root.is_global() && p.agent.id == *id),
+            ScopeId::Project(path) => skill
+                .places
+                .iter()
+                .any(|p| matches!(&p.root, RootId::Project(p_root) if p_root == path)),
         }
     }
 

@@ -29,7 +29,7 @@ pub fn scan(folders: &[String], home: &Path) -> Library {
 
     for root in &roots {
         for agent in AGENTS {
-            let dir = root.path.join(agent.dir);
+            let dir = root.path.join(agent.dir_for(&root.id));
             if !dir.is_dir() {
                 continue;
             }
@@ -38,31 +38,16 @@ pub fn scan(folders: &[String], home: &Path) -> Library {
                 agent,
                 dir: dir.clone(),
             });
-            for entry in sorted_children(&dir) {
-                let Some((md, disabled)) = skill_file(&entry) else {
-                    continue;
-                };
-                let real = canonical(&entry);
-                let place = Place {
-                    agent,
-                    entry: entry.clone(),
-                    file: md,
-                    is_link: is_link(&entry),
-                };
-                if let Some(&ix) = by_real.get(&real) {
-                    skills[ix].places.push(place);
-                    continue;
-                }
-                by_real.insert(real.clone(), skills.len());
-                skills.push(read_skill(&real, disabled, root, place));
-            }
+            let mut visiting = HashSet::new();
+            scan_skill_dir(&dir, root, agent, &mut visiting, &mut skills, &mut by_real);
         }
     }
 
     for root in &roots {
         let dir = root.path.join(".claude/commands");
         if dir.is_dir() {
-            read_commands(&dir, &dir, root, &mut skills, &mut by_real);
+            let mut visiting = HashSet::new();
+            read_commands(&dir, &dir, root, &mut visiting, &mut skills, &mut by_real);
         }
     }
 
@@ -110,7 +95,49 @@ fn walk(path: &Path, depth: usize, home: &Path, seen: &mut HashSet<PathBuf>, fou
 }
 
 fn has_skills(path: &Path) -> bool {
-    AGENTS.iter().any(|a| path.join(a.dir).is_dir()) || path.join(".claude/commands").is_dir()
+    let root = super::RootId::Project(path.to_path_buf());
+    AGENTS.iter().any(|a| path.join(a.dir_for(&root)).is_dir())
+        || path.join(".claude/commands").is_dir()
+}
+
+fn scan_skill_dir(
+    dir: &Path,
+    root: &Root,
+    agent: &'static super::Agent,
+    visiting: &mut HashSet<PathBuf>,
+    skills: &mut Vec<Skill>,
+    by_real: &mut HashMap<PathBuf, usize>,
+) {
+    let real_dir = canonical(dir);
+    if !visiting.insert(real_dir.clone()) {
+        return;
+    }
+
+    for entry in sorted_children(dir) {
+        if let Some((md, disabled)) = skill_file(&entry) {
+            let real = canonical(&entry);
+            let place = Place {
+                root: root.id.clone(),
+                root_label: root.label.clone(),
+                agent,
+                entry: entry.clone(),
+                file: md,
+                is_link: is_link(&entry),
+            };
+            if let Some(&ix) = by_real.get(&real) {
+                skills[ix].places.push(place);
+            } else {
+                by_real.insert(real.clone(), skills.len());
+                skills.push(read_skill(&real, disabled, root, place));
+            }
+            continue;
+        }
+        if entry.is_dir() {
+            scan_skill_dir(&entry, root, agent, visiting, skills, by_real);
+        }
+    }
+
+    visiting.remove(&real_dir);
 }
 
 fn skill_file(entry: &Path) -> Option<(PathBuf, bool)> {
@@ -163,16 +190,21 @@ fn read_commands(
     dir: &Path,
     base: &Path,
     root: &Root,
+    visiting: &mut HashSet<PathBuf>,
     skills: &mut Vec<Skill>,
     by_real: &mut HashMap<PathBuf, usize>,
 ) {
+    let real_dir = canonical(dir);
+    if !visiting.insert(real_dir.clone()) {
+        return;
+    }
     for path in sorted_children(dir) {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         if name.starts_with('.') {
             continue;
         }
         if path.is_dir() {
-            read_commands(&path, base, root, skills, by_real);
+            read_commands(&path, base, root, visiting, skills, by_real);
             continue;
         }
         let disabled = name.ends_with(".md.disabled");
@@ -221,6 +253,8 @@ fn read_commands(
             body: header.body,
             text,
             places: vec![Place {
+                root: root.id.clone(),
+                root_label: root.label.clone(),
                 agent: claude,
                 entry: path.clone(),
                 file: path.clone(),
@@ -230,6 +264,7 @@ fn read_commands(
             drift: false,
         });
     }
+    visiting.remove(&real_dir);
 }
 
 /// The same name in more than one place, with different text: copies that
@@ -253,27 +288,28 @@ fn scopes(skills: &[Skill], projects: &[Root], home: &Path) -> Vec<Scope> {
         count: skills.len(),
         path: None,
     }];
+    let global_root = super::RootId::Global;
     for agent in AGENTS {
-        let dir = home.join(agent.dir);
+        let dir = home.join(agent.dir_for(&global_root));
         if !dir.is_dir() {
             continue;
         }
-        let count = skills
-            .iter()
-            .filter(|s| s.root.is_global() && s.places.iter().any(|p| p.agent.id == agent.id))
-            .count();
+        let scope_id = ScopeId::Agent(agent.id);
+        let count = skills.iter().filter(|s| scope_id.contains(s)).count();
         scopes.push(Scope {
-            id: ScopeId::Agent(agent.id),
+            id: scope_id,
             label: if agent.id == "agents" { "~/.agents".into() } else { agent.label.into() },
             count,
             path: Some(tilde(&dir, home)),
         });
     }
     for project in projects {
+        let scope_id = ScopeId::Project(project.path.clone());
+        let count = skills.iter().filter(|s| scope_id.contains(s)).count();
         scopes.push(Scope {
-            id: ScopeId::Project(project.path.clone()),
+            id: scope_id,
             label: project.label.clone(),
-            count: skills.iter().filter(|s| s.root == project.id).count(),
+            count,
             path: Some(tilde(&project.path, home)),
         });
     }

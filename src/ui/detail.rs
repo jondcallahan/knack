@@ -314,11 +314,29 @@ pub fn render_detail(
 
     // Agent sharing strip ("Available to") for skills (not slash commands)
     let agent_strip = if skill.kind == Kind::Skill {
+        let sharing_root = match app.prefs.scope_id() {
+            crate::library::ScopeId::Project(path) => {
+                let proj_root = crate::library::RootId::Project(path);
+                if skill.places.iter().any(|p| p.root == proj_root) {
+                    proj_root
+                } else {
+                    skill.root.clone()
+                }
+            }
+            crate::library::ScopeId::Agent(_) => {
+                if skill.places.iter().any(|p| p.root.is_global()) {
+                    crate::library::RootId::Global
+                } else {
+                    skill.root.clone()
+                }
+            }
+            crate::library::ScopeId::All => skill.root.clone(),
+        };
         let installed: Vec<_> = app
             .library
             .installed
             .iter()
-            .filter(|i| i.root == skill.root)
+            .filter(|i| i.root == sharing_root)
             .cloned()
             .collect();
         if installed.is_empty() {
@@ -327,7 +345,7 @@ pub fn render_detail(
             let pills = installed.into_iter().map(|inst| {
                 let agent_id = inst.agent.id;
                 let agent_label = inst.agent.label;
-                let existing = skill.place(agent_id);
+                let existing = skill.place_in(&inst.root, agent_id);
                 let pill_id = ElementId::Name(format!("agent-pill:{agent_id}").into());
 
                 match existing {

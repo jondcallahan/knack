@@ -5,8 +5,12 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_BIN="/Applications/Knack.app/Contents/MacOS/knack"
-DEMO_HOME="${DEMO_HOME:-/tmp/knack-demo-home}"
+DEMO_ROOT="$(mktemp -d /tmp/knack-demo.XXXXXX)"
+DEMO_HOME="$DEMO_ROOT/home"
 OUT_DIR="$ROOT/site/img"
+
+FIND_WID="$DEMO_ROOT/knack-find-wid"
+trap 'rm -rf "$DEMO_ROOT"' EXIT
 
 if [ ! -x "$APP_BIN" ]; then
   echo "Expected built app at $APP_BIN; run ./bundle.sh first." >&2
@@ -22,8 +26,7 @@ sips -z 64 64 "$ROOT/assets/icon.png" --out "$ROOT/site/favicon.png" >/dev/null
 sips -z 180 180 "$ROOT/assets/icon.png" --out "$ROOT/site/apple-touch-icon.png" >/dev/null
 
 # Helper returning the window ID owned by a PID via CoreGraphics (compiled once).
-FIND_WID="/tmp/knack-find-wid"
-cat > /tmp/knack-find-wid.swift <<'SWIFT'
+cat > "$DEMO_ROOT/knack-find-wid.swift" <<'SWIFT'
 import Cocoa
 import CoreGraphics
 
@@ -43,7 +46,7 @@ if let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: An
 }
 exit(1)
 SWIFT
-swiftc -O /tmp/knack-find-wid.swift -o "$FIND_WID"
+swiftc -O "$DEMO_ROOT/knack-find-wid.swift" -o "$FIND_WID"
 
 capture_shot() {
   out_path="$1"
@@ -106,7 +109,7 @@ capture_shot "$OUT_DIR/knack-new-light.png" "light" "new"
 capture_shot "$OUT_DIR/knack-new-dark.png" "dark" "new"
 
 # Generate 1200x630 OpenGraph preview card framing the Light hero window cleanly.
-cat > /tmp/knack-make-og.swift <<'SWIFT'
+cat > "$DEMO_ROOT/knack-make-og.swift" <<'SWIFT'
 import Cocoa
 
 let srcPath = CommandLine.arguments[1]
@@ -165,6 +168,4 @@ if let data = rep.representation(using: .png, properties: [:]) {
     try data.write(to: URL(fileURLWithPath: dstPath))
 }
 SWIFT
-swift /tmp/knack-make-og.swift "$OUT_DIR/knack-light.png" "$OUT_DIR/og.png"
-rm -f /tmp/knack-make-og.swift /tmp/knack-find-wid.swift "$FIND_WID"
-rm -rf "$DEMO_HOME"
+swift "$DEMO_ROOT/knack-make-og.swift" "$OUT_DIR/knack-light.png" "$OUT_DIR/og.png"

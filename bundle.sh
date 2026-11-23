@@ -56,7 +56,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP" 2>/dev/null || true
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  codesign --force --deep --sign - "$APP"
+else
+  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+fi
 
 if ! $INSTALL; then
   echo "Built $APP ($VERSION)"

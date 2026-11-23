@@ -23,7 +23,7 @@ use gpui_kit::{
 
 use crate::{
     assets::agent_icon,
-    library::{Frontmatter, Installed, RootId, compose, expand, parse_frontmatter, tilde},
+    library::{Frontmatter, Installed, RootId, compose_preserving, expand, parse_frontmatter, slug, tilde},
 };
 
 use super::KnackApp;
@@ -266,6 +266,10 @@ impl NewSkillForm {
         }
     }
 
+    pub fn normalized_name(&self, cx: &App) -> String {
+        slug(&self.final_name(cx))
+    }
+
     pub fn final_description(&self, cx: &App) -> String {
         let typed = self.description.read(cx).value().trim().to_string();
         if !typed.is_empty() {
@@ -280,8 +284,10 @@ impl NewSkillForm {
     }
 
     pub fn can_create(&self, cx: &App) -> bool {
+        let name = self.normalized_name(cx);
         !self.creating
-            && !self.final_name(cx).is_empty()
+            && !name.is_empty()
+            && name.len() <= 64
             && !self.final_description(cx).is_empty()
             && !self.dir_select.read(cx).selected_values().is_empty()
     }
@@ -307,7 +313,7 @@ impl NewSkillForm {
     pub fn compose_skill_md(&self, cx: &App) -> (String, String) {
         let raw_text = self.instructions.read(cx).value().to_string();
         let parsed = parse_frontmatter(&raw_text);
-        let name = self.final_name(cx);
+        let name = self.normalized_name(cx);
         let description = self.final_description(cx);
         let license = {
             let v = self.license.read(cx).value().trim().to_string();
@@ -340,13 +346,8 @@ impl NewSkillForm {
         if !tools.is_empty() {
             keys.push(("allowed-tools".to_string(), tools));
         }
-        for (k, v) in &parsed.keys {
-            if !KNOWN_KEYS.contains(&k.as_str()) {
-                keys.push((k.clone(), v.clone()));
-            }
-        }
 
-        let md = compose(&keys, &parsed.body);
+        let md = compose_preserving(&keys, &parsed, &parsed.body, &KNOWN_KEYS);
         (name, md)
     }
 }

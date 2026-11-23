@@ -63,6 +63,8 @@ fn open_knack(
         gpui_kit::init(cx);
         knack::theme::install(cx);
         actions::bind_keys(cx);
+        cx.on_action(|_: &actions::Quit, cx| KnackApp::handle_global_quit(cx));
+        cx.on_action(|_: &actions::CloseWindow, cx| KnackApp::handle_global_close_window(cx));
     });
     let (handle, app) = cx.update(|cx| {
         gpui_kit::open_window(
@@ -229,8 +231,8 @@ fn creates_new_skill_from_pasted_frontmatter(cx: &mut TestAppContext) {
     let created = home.join(".agents/skills/pasted-skill/SKILL.md");
     assert!(created.is_file(), "expected pasted skill to be created on disk");
     let contents = fs::read_to_string(&created).unwrap();
-    assert!(contents.contains("name: pasted-skill"));
-    assert!(contents.contains("description: Parsed from header"));
+    assert!(contents.contains("name: \"pasted-skill\""));
+    assert!(contents.contains("description: \"Parsed from header\""));
     assert!(contents.contains("model: sonnet"));
     assert!(contents.contains("Follow these steps."));
 
@@ -671,5 +673,226 @@ fn update_check_detects_newer_release_from_feed(cx: &mut TestAppContext) {
             .available_update()
             .expect("newer release detected");
         assert_eq!(update.version, "9.9.9");
+    });
+}
+
+#[gpui_kit::test]
+fn creates_normalized_slug_and_preserves_yaml_metadata(cx: &mut TestAppContext) {
+    let (_temp, home, prefs_path) = setup_fixture();
+    let (handle, _app) = open_knack(cx, home.clone(), prefs_path);
+
+    let pasted = "---\nname: Old Name\ndescription: Parsed from header\nmetadata:\n  author: acme\n  version: \"1.0\"\n---\n\n# Body\n\nFollow these steps.";
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(pasted.into()));
+
+    cx.update_window(handle, |_, window, cx| {
+        window.click("toolbar-new", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.press("cmd-v", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.click("new-name-input", cx);
+        window.input("My Skill", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-skill-create", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let created = home.join(".agents/skills/my-skill/SKILL.md");
+    assert!(created.is_file(), "expected normalized my-skill folder");
+    let contents = fs::read_to_string(&created).unwrap();
+    assert!(contents.contains("name: \"my-skill\"\n"), "got:\n{contents}");
+    assert!(
+        contents.contains("metadata:\n  author: acme\n  version: \"1.0\"\n"),
+        "expected nested metadata mapping to stay intact, got:\n{contents}"
+    );
+}
+
+#[gpui_kit::test]
+fn cmd_q_prompts_when_editor_is_dirty(cx: &mut TestAppContext) {
+    let (_temp, home, prefs_path) = setup_fixture();
+    let (handle, app) = open_knack(cx, home, prefs_path);
+
+    cx.update_window(handle, |_, window, cx| {
+        window.press("cmd-e", cx);
+        window.render_frame(cx);
+        window.input("# Unsaved note\n", cx);
+        window.render_frame(cx);
+        window.press("cmd-q", cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        // Second Cmd+Q and Cmd+W while dialog has focus must still guard dirty edits.
+        window.press("cmd-q", cx);
+        window.render_frame(cx);
+        window.press("cmd-w", cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+    cx.update(|cx| {
+        assert_eq!(app.read(cx).detail_mode(), DetailMode::Edit);
+    });
+}
+
+#[gpui_kit::test]
+fn project_scope_detail_unlinks_cross_root_project_symlink(cx: &mut TestAppContext) {
+    let (_temp, home, prefs_path) = setup_fixture();
+    write(
+        &home.join(".agents/skills/cross/SKILL.md"),
+        &skill_md("cross", "Global original linked into project", "Cross body"),
+    );
+    fs::create_dir_all(home.join("dev/app/.claude/skills")).unwrap();
+    symlink(
+        home.join(".agents/skills/cross"),
+        home.join("dev/app/.claude/skills/cross"),
+    )
+    .unwrap();
+
+    let (handle, app) = open_knack(cx, home.clone(), prefs_path);
+    let cross_row_id = gpui_kit::SharedString::from(format!(
+        "skill-row:{}",
+        home.join(".agents/skills/cross").display()
+    ));
+
+    // Switch sidebar to project `dev/app` ("2-0-0"), select `cross`, and click Claude link pill.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("knack-sidebar").click("2-0-0", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.click(cross_row_id.clone(), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-pill:claude", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert!(
+        !home.join("dev/app/.claude/skills/cross").exists(),
+        "expected project-scope unlink to remove the project symlink"
+    );
+    assert!(
+        home.join(".agents/skills/cross/SKILL.md").is_file(),
+        "expected global original to remain intact"
+    );
+    cx.update(|cx| {
+        assert!(app.read(cx).library().skills.iter().any(|s| s.name == "cross"));
+    });
+}
+
+#[gpui_kit::test]
+fn cmd_q_with_about_focused_prompts_discard_and_suppresses_duplicates(cx: &mut TestAppContext) {
+    let (_temp, home, prefs_path) = setup_fixture();
+    let (handle, app) = open_knack(cx, home, prefs_path);
+
+    cx.update_window(handle, |_, window, cx| {
+        window.press("cmd-e", cx);
+        window.render_frame(cx);
+        window.input("# Unsaved note\n", cx);
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(actions::About), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        window.press("cmd-q", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Escape closes Discard, leaving About still open below it.
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        // Repeated Cmd+Q / Cmd+W open at most one Discard dialog.
+        window.press("cmd-q", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("cmd-q", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("cmd-w", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // First Escape closes the single stacked Discard prompt; About stays open.
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        // Second Escape closes About.
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        assert_eq!(app.read(cx).detail_mode(), DetailMode::Edit);
+        assert!(!cx.windows().is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn cmd_w_with_about_focused_closes_clean_window(cx: &mut TestAppContext) {
+    let (_temp, home, prefs_path) = setup_fixture();
+    let (handle, _app) = open_knack(cx, home, prefs_path);
+
+    cx.update_window(handle, |_, window, cx| {
+        window.activate_window();
+        window.dispatch_action(Box::new(actions::About), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        window.press("cmd-w", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        assert!(cx.windows().is_empty());
     });
 }

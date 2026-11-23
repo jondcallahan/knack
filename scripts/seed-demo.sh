@@ -2,8 +2,19 @@
 # Seeds a clean, synthetic skill library with zero personal data for screenshots.
 set -eu
 
-DEMO_HOME="${1:-/tmp/knack-demo-home}"
-rm -rf "$DEMO_HOME"
+if [ $# -gt 0 ]; then
+  DEMO_HOME="$1"
+  if [ -z "$DEMO_HOME" ]; then
+    echo "Destination path must not be empty." >&2
+    exit 1
+  fi
+  if [ -e "$DEMO_HOME" ]; then
+    echo "Refusing to overwrite existing destination: $DEMO_HOME" >&2
+    exit 1
+  fi
+else
+  DEMO_HOME="$(mktemp -d /tmp/knack-demo-home.XXXXXX)"
+fi
 
 mkdir -p \
   "$DEMO_HOME/.agents/skills" \

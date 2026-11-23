@@ -91,11 +91,19 @@ impl ListDelegate for SkillListDelegate {
         if skill.kind == Kind::Command {
             chips.push("/command".into());
         }
-        if !skill.root.is_global() {
-            chips.push(skill.root_label.clone().into());
+        for place in &skill.places {
+            if !place.root.is_global() {
+                let label: SharedString = place.root_label.clone().into();
+                if !chips.contains(&label) {
+                    chips.push(label);
+                }
+            }
         }
         for place in &skill.places {
-            chips.push(place.agent.label.into());
+            let label: SharedString = place.agent.label.into();
+            if !chips.contains(&label) {
+                chips.push(label);
+            }
         }
 
         let desc = if skill.description.is_empty() {
@@ -244,39 +252,7 @@ pub fn render_skill_list(
                 .flex_1(),
         );
 
-    let body = if let Some(err) = &app.scan_error {
-        let err_msg = err.clone();
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .items_center()
-            .justify_center()
-            .px_4()
-            .child(
-                Empty::new()
-                    .header(
-                        EmptyHeader::new()
-                            .media(
-                                EmptyMedia::new()
-                                    .with_variant(EmptyMediaVariant::Icon)
-                                    .child(Icon::new(IconName::TriangleAlert)),
-                            )
-                            .title(EmptyTitle::new().child("Can't read skills"))
-                            .description(EmptyDescription::new().child(err_msg)),
-                    )
-                    .content(
-                        EmptyContent::new().child(
-                            Button::new("retry-scan")
-                                .small()
-                                .label("Try again")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.trigger_scan(window, cx);
-                                })),
-                        ),
-                    ),
-            )
-            .into_any_element()
-    } else if shown_count == 0 && !app.scanning {
+    let body = if shown_count == 0 && !app.scanning {
         if !query_trimmed.is_empty() {
             let title = format!("No results for \"{query_trimmed}\"");
             v_flex()

@@ -23,30 +23,50 @@ pub fn save(path: &Path, text: &str, seen: Option<SystemTime>, force: bool) -> R
     Ok(SaveOutcome::Saved(modified(path)))
 }
 
-/// A new skill folder named after `name`, holding `text` as its SKILL.md.
-/// Returns the folder.
-pub fn create(dir: &Path, name: &str, text: &str) -> Result<PathBuf> {
+const MAX_SKILL_NAME_LEN: usize = 64;
+
+fn validated_slug(name: &str) -> Result<String> {
     let slug = super::slug(name);
     if slug.is_empty() {
         bail!("Give the skill a name.");
     }
-    let folder = dir.join(&slug);
-    if folder.exists() {
-        bail!("{} already exists.", folder.display());
+    if slug.len() > MAX_SKILL_NAME_LEN {
+        bail!("Skill name must be at most {MAX_SKILL_NAME_LEN} characters.");
     }
-    std::fs::create_dir_all(&folder)?;
-    std::fs::write(folder.join("SKILL.md"), text)?;
+    Ok(slug)
+}
+
+/// A new skill folder named after `name`, holding `text` as its SKILL.md.
+/// Returns the folder. Claims the folder with `create_dir` and cleans up on
+/// write failure.
+pub fn create(dir: &Path, name: &str, text: &str) -> Result<PathBuf> {
+    let slug = validated_slug(name)?;
+    std::fs::create_dir_all(dir)?;
+    let folder = dir.join(&slug);
+    match std::fs::create_dir(&folder) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!("{} already exists.", folder.display());
+        }
+        Err(err) => return Err(err.into()),
+    }
+    if let Err(err) = std::fs::write(folder.join("SKILL.md"), text) {
+        let _ = std::fs::remove_dir_all(&folder);
+        return Err(err.into());
+    }
     Ok(canonical(&folder))
 }
 
 /// Creates a skill in the primary folder (preferring `preferred_primary` if it
-/// is among `dirs`) and symlinks it into every other chosen folder.
+/// is among `dirs`) and symlinks it into every other chosen folder. Preflights all
+/// destinations and rolls back entries created by this call on error.
 pub fn create_many(
     dirs: &[PathBuf],
     preferred_primary: &Path,
     name: &str,
     text: &str,
 ) -> Result<PathBuf> {
+    let slug = validated_slug(name)?;
     let mut unique: Vec<PathBuf> = Vec::new();
     for dir in dirs {
         if !unique.iter().any(|existing| existing == dir) {
@@ -56,15 +76,30 @@ pub fn create_many(
     if unique.is_empty() {
         bail!("Choose at least one destination folder.");
     }
+    for dir in &unique {
+        let target = dir.join(&slug);
+        if target.exists() || is_link(&target) {
+            bail!("{} already exists.", target.display());
+        }
+    }
+
     let primary = unique
         .iter()
         .find(|d| d.as_path() == preferred_primary)
         .unwrap_or(&unique[0])
         .clone();
-    let created = create(&primary, name, text)?;
+    let created = create(&primary, &slug, text)?;
+    let mut created_links: Vec<PathBuf> = Vec::new();
     for dir in &unique {
         if dir != &primary {
-            link(&created, dir)?;
+            if let Err(err) = link(&created, dir) {
+                for entry in &created_links {
+                    let _ = std::fs::remove_file(entry);
+                }
+                let _ = std::fs::remove_dir_all(&created);
+                return Err(err);
+            }
+            created_links.push(dir.join(&slug));
         }
     }
     Ok(created)

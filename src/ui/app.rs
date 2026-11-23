@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use gpui_kit::{
-    Animation, AnimationExt as _, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    PathPromptOptions, Render, Styled as _, Subscription, Task, Transformation, Window,
+    Animation, AnimationExt as _, AnyWindowHandle, App, AppContext as _, ClipboardItem, Context,
+    Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task,
+    Transformation, WeakEntity, Window,
     assets::IconName as LucideIcon,
     base::animation::cubic_bezier,
     component::{
@@ -47,6 +48,11 @@ use super::{
 
 const RESCAN_SPIN_DURATION: Duration = Duration::from_millis(600);
 
+#[derive(Default)]
+struct OpenKnackWindows(Vec<(AnyWindowHandle, WeakEntity<KnackApp>)>);
+
+impl Global for OpenKnackWindows {}
+
 pub struct KnackApp {
     pub(super) focus_handle: FocusHandle,
     pub(super) prefs: Prefs,
@@ -54,7 +60,6 @@ pub struct KnackApp {
     pub(super) home: PathBuf,
     pub(super) library: Library,
     pub(super) scanning: bool,
-    pub(super) scan_error: Option<String>,
     pub(super) mode: DetailMode,
     pub(super) search_input: Entity<InputState>,
     pub(super) editor_input: Entity<EditorState>,
@@ -71,10 +76,14 @@ pub struct KnackApp {
     installing_update: bool,
     auto_check_updates: bool,
     initial_mode_applied: bool,
+    allow_close_dirty: bool,
+    discard_prompt_open: bool,
+    new_skill_session: u64,
+    next_op_id: u64,
     _subscriptions: Vec<Subscription>,
     _scan_task: Option<Task<()>>,
     _spin_task: Option<Task<()>>,
-    _op_task: Option<Task<()>>,
+    active_ops: Vec<(u64, Task<()>)>,
     _update_task: Option<Task<()>>,
 }
 
@@ -186,6 +195,29 @@ impl KnackApp {
             },
         ));
 
+        let weak_close = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let Some(entity) = weak_close.upgrade() else {
+                return true;
+            };
+            entity.update(cx, |this, cx| {
+                if this.allow_close_dirty || !this.is_dirty(cx) {
+                    return true;
+                }
+                this.confirm_discard_if_dirty(window, cx, |this, window, _cx| {
+                    this.allow_close_dirty = true;
+                    window.remove_window();
+                });
+                false
+            })
+        });
+
+        let weak_self = cx.entity().downgrade();
+        let handle = window.window_handle();
+        let windows = cx.default_global::<OpenKnackWindows>();
+        windows.0.retain(|(_, w)| w.upgrade().is_some());
+        windows.0.push((handle, weak_self));
+
         let mut app = Self {
             focus_handle,
             prefs,
@@ -193,7 +225,6 @@ impl KnackApp {
             home,
             library: Library::default(),
             scanning: true,
-            scan_error: None,
             mode: DetailMode::Read,
             search_input,
             editor_input,
@@ -210,10 +241,14 @@ impl KnackApp {
             installing_update: false,
             auto_check_updates,
             initial_mode_applied: false,
+            allow_close_dirty: false,
+            discard_prompt_open: false,
+            new_skill_session: 0,
+            next_op_id: 0,
             _subscriptions: subscriptions,
             _scan_task: None,
             _spin_task: None,
-            _op_task: None,
+            active_ops: Vec::new(),
             _update_task: None,
         };
 
@@ -351,7 +386,6 @@ impl KnackApp {
 
     pub(super) fn trigger_scan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.scanning = true;
-        self.scan_error = None;
         let folders = self.prefs.folders.clone();
         let home = self.home.clone();
 
@@ -363,7 +397,6 @@ impl KnackApp {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.library = scanned;
                 this.scanning = false;
-                this.scan_error = None;
 
                 // Reset scope to All if the previously saved scope no longer exists.
                 let scope = this.prefs.scope_id();
@@ -496,6 +529,141 @@ impl KnackApp {
         cx.notify();
     }
 
+    pub fn handle_global_close_window(cx: &mut App) {
+        let Some(active) = cx.active_window().or_else(|| {
+            let windows = cx.windows();
+            (windows.len() == 1).then(|| windows[0])
+        }) else {
+            return;
+        };
+        let entity = cx
+            .try_global::<OpenKnackWindows>()
+            .and_then(|g| g.0.iter().find(|(h, _)| *h == active).and_then(|(_, w)| w.upgrade()));
+        cx.defer(move |cx| {
+            let _ = active.update(cx, |_, window, cx| {
+                if let Some(entity) = entity {
+                    entity.update(cx, |this, cx| {
+                        this.confirm_discard_if_dirty(window, cx, |this, window, _| {
+                            this.allow_close_dirty = true;
+                            window.remove_window();
+                        });
+                    });
+                } else {
+                    window.remove_window();
+                }
+            });
+        });
+    }
+
+    pub fn handle_global_quit(cx: &mut App) {
+        let open: Vec<(AnyWindowHandle, WeakEntity<KnackApp>)> = cx
+            .try_global::<OpenKnackWindows>()
+            .map(|g| g.0.clone())
+            .unwrap_or_default();
+        for (handle, weak) in open {
+            let Some(entity) = weak.upgrade() else {
+                continue;
+            };
+            if entity.read(cx).is_dirty(cx) {
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.confirm_discard_if_dirty(window, cx, |this, _, cx| {
+                                this.allow_close_dirty = true;
+                                cx.quit();
+                            });
+                        });
+                    });
+                });
+                return;
+            }
+        }
+        cx.quit();
+    }
+
+    fn next_op(&mut self) -> u64 {
+        self.next_op_id = self.next_op_id.wrapping_add(1);
+        self.next_op_id
+    }
+
+    fn track_op(&mut self, id: u64, task: Task<()>) {
+        self.active_ops.push((id, task));
+    }
+
+    fn finish_op(&mut self, id: u64) {
+        self.active_ops.retain(|(op_id, _)| *op_id != id);
+    }
+
+    fn confirm_discard_if_dirty<F>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        proceed: F,
+    ) where
+        F: FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    {
+        self.confirm_discard_with_cancel(window, cx, proceed, |_, _, _| {});
+    }
+
+    fn confirm_discard_with_cancel<F, C>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        proceed: F,
+        on_cancel: C,
+    ) where
+        F: FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        C: FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    {
+        if !self.is_dirty(cx) {
+            proceed(self, window, cx);
+            return;
+        }
+        if self.discard_prompt_open && window.has_active_dialog(cx) {
+            return;
+        }
+        self.discard_prompt_open = true;
+        let weak = cx.entity().downgrade();
+        let proceed_cell = std::rc::Rc::new(std::cell::Cell::new(Some(proceed)));
+        let cancel_cell = std::rc::Rc::new(std::cell::Cell::new(Some(on_cancel)));
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak_ok = weak.clone();
+            let weak_cancel = weak.clone();
+            let weak_close = weak.clone();
+            let proceed_cell = proceed_cell.clone();
+            let cancel_cell = cancel_cell.clone();
+            alert
+                .confirm()
+                .title("Discard unsaved changes?")
+                .ok_text("Discard")
+                .ok_variant(ButtonVariant::Danger)
+                .cancel_text("Keep editing")
+                .on_ok(move |_, window, cx| {
+                    let _ = weak_ok.update(cx, |this, cx| {
+                        this.discard_prompt_open = false;
+                        if let Some(f) = proceed_cell.take() {
+                            f(this, window, cx);
+                        }
+                    });
+                    true
+                })
+                .on_cancel(move |_, window, cx| {
+                    let _ = weak_cancel.update(cx, |this, cx| {
+                        this.discard_prompt_open = false;
+                        if let Some(c) = cancel_cell.take() {
+                            c(this, window, cx);
+                        }
+                    });
+                    true
+                })
+                .on_close(move |_, _, cx| {
+                    let _ = weak_close.update(cx, |this, _| {
+                        this.discard_prompt_open = false;
+                    });
+                })
+        });
+    }
+
     fn request_select_skill(
         &mut self,
         id: PathBuf,
@@ -507,35 +675,13 @@ impl KnackApp {
         {
             return;
         }
-        if self.is_dirty(cx) {
-            let weak = cx.entity().downgrade();
-            let target_id = id.clone();
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                let weak_ok = weak.clone();
-                let weak_cancel = weak.clone();
-                let target_id = target_id.clone();
-                alert
-                    .confirm()
-                    .title("Discard unsaved changes?")
-                    .ok_text("Discard")
-                    .ok_variant(ButtonVariant::Danger)
-                    .cancel_text("Keep editing")
-                    .on_ok(move |_, window, cx| {
-                        let _ = weak_ok.update(cx, |this, cx| {
-                            this.commit_select_skill(target_id.clone(), window, cx);
-                        });
-                        true
-                    })
-                    .on_cancel(move |_, window, cx| {
-                        let _ = weak_cancel.update(cx, |this, cx| {
-                            this.restore_list_selection(window, cx);
-                        });
-                        true
-                    })
-            });
-            return;
-        }
-        self.commit_select_skill(id, window, cx);
+        let target_id = id;
+        self.confirm_discard_with_cancel(
+            window,
+            cx,
+            move |this, window, cx| this.commit_select_skill(target_id, window, cx),
+            |this, window, cx| this.restore_list_selection(window, cx),
+        );
     }
 
     fn commit_select_skill(
@@ -544,6 +690,9 @@ impl KnackApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.mode == DetailMode::New {
+            self.new_skill_session = self.new_skill_session.wrapping_add(1);
+        }
         self.prefs.set_selected(Some(&id));
         self.save_prefs();
         self.mode = DetailMode::Read;
@@ -556,6 +705,9 @@ impl KnackApp {
         let Some(skill) = self.current_skill().cloned() else {
             return;
         };
+        if self.mode == DetailMode::New {
+            self.new_skill_session = self.new_skill_session.wrapping_add(1);
+        }
         self.draft_seen = skill.modified;
         self.conflict = false;
         self.mode = DetailMode::Edit;
@@ -574,34 +726,15 @@ impl KnackApp {
         }
         match self.mode {
             DetailMode::Edit => {
-                if self.is_dirty(cx) {
-                    let weak = cx.entity().downgrade();
-                    window.open_alert_dialog(cx, move |alert, _, _| {
-                        let weak_ok = weak.clone();
-                        alert
-                            .confirm()
-                            .title("Discard unsaved changes?")
-                            .ok_text("Discard")
-                            .ok_variant(ButtonVariant::Danger)
-                            .cancel_text("Keep editing")
-                            .on_ok(move |_, window, cx| {
-                                let _ = weak_ok.update(cx, |this, cx| {
-                                    this.mode = DetailMode::Read;
-                                    this.conflict = false;
-                                    this.focus_handle.focus(window, cx);
-                                    cx.notify();
-                                });
-                                true
-                            })
-                    });
-                } else {
-                    self.mode = DetailMode::Read;
-                    self.conflict = false;
-                    self.focus_handle.focus(window, cx);
+                self.confirm_discard_if_dirty(window, cx, |this, window, cx| {
+                    this.mode = DetailMode::Read;
+                    this.conflict = false;
+                    this.focus_handle.focus(window, cx);
                     cx.notify();
-                }
+                });
             }
             DetailMode::New => {
+                self.new_skill_session = self.new_skill_session.wrapping_add(1);
                 self.mode = DetailMode::Read;
                 self.focus_handle.focus(window, cx);
                 cx.notify();
@@ -635,13 +768,15 @@ impl KnackApp {
         let path = skill.file.clone();
         let seen = self.draft_seen;
         self.saving = true;
+        let op_id = self.next_op();
 
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { library::save(&path, &draft, seen, force) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
                 this.saving = false;
                 match result {
                     Ok(SaveOutcome::Saved(modified)) => {
@@ -661,34 +796,19 @@ impl KnackApp {
                     }
                 }
             });
-        }));
+        });
+        self.track_op(op_id, task);
         cx.notify();
     }
 
     pub(super) fn start_new_skill(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_dirty(cx) {
-            let weak = cx.entity().downgrade();
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                let weak_ok = weak.clone();
-                alert
-                    .confirm()
-                    .title("Discard unsaved changes?")
-                    .ok_text("Discard")
-                    .ok_variant(ButtonVariant::Danger)
-                    .cancel_text("Keep editing")
-                    .on_ok(move |_, window, cx| {
-                        let _ = weak_ok.update(cx, |this, cx| {
-                            this.open_new_skill_form(window, cx);
-                        });
-                        true
-                    })
-            });
-            return;
-        }
-        self.open_new_skill_form(window, cx);
+        self.confirm_discard_if_dirty(window, cx, |this, window, cx| {
+            this.open_new_skill_form(window, cx);
+        });
     }
 
     fn open_new_skill_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_skill_session = self.new_skill_session.wrapping_add(1);
         self.mode = DetailMode::New;
         self.conflict = false;
         self.new_skill.sync_destinations(
@@ -709,32 +829,45 @@ impl KnackApp {
         let dirs = self.new_skill.selected_dirs(&self.home, cx);
         let preferred_primary = expand("~/.agents/skills", &self.home);
         let (name, text) = self.new_skill.compose_skill_md(cx);
+        let session = self.new_skill_session;
         self.new_skill.creating = true;
         self.new_skill.error = None;
+        let op_id = self.next_op();
 
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { library::create_many(&dirs, &preferred_primary, &name, &text) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.new_skill.creating = false;
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
+                let same_form = this.mode == DetailMode::New && this.new_skill_session == session;
+                if same_form {
+                    this.new_skill.creating = false;
+                }
                 match result {
                     Ok(created_id) => {
-                        this.prefs.set_selected(Some(&created_id));
-                        this.prefs.set_scope(&ScopeId::All);
-                        this.save_prefs();
-                        this.mode = DetailMode::Read;
+                        if same_form {
+                            this.prefs.set_selected(Some(&created_id));
+                            this.prefs.set_scope(&ScopeId::All);
+                            this.save_prefs();
+                            this.mode = DetailMode::Read;
+                        }
                         window.push_notification(Notification::success("Skill created"), cx);
                         this.trigger_scan(window, cx);
                     }
                     Err(err) => {
-                        this.new_skill.error = Some(err.to_string());
-                        cx.notify();
+                        if same_form {
+                            this.new_skill.error = Some(err.to_string());
+                            cx.notify();
+                        } else {
+                            window.push_notification(Notification::error(err.to_string()), cx);
+                        }
                     }
                 }
             });
-        }));
+        });
+        self.track_op(op_id, task);
         cx.notify();
     }
 
@@ -747,29 +880,34 @@ impl KnackApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
+        let op_id = self.next_op();
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { library::set_enabled(&file, enabled) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(new_path) => {
-                    // For a slash command, the skill ID is the file path itself,
-                    // so keep it selected under its renamed path.
-                    if kind == Kind::Command && this.prefs.selected_path().as_deref() == Some(&skill_id) {
-                        this.prefs.set_selected(Some(&new_path));
-                        this.save_prefs();
+            let _ = this.update_in(cx, |this, window, cx| {
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
+                match result {
+                    Ok(new_path) => {
+                        // For a slash command, the skill ID is the file path itself,
+                        // so keep it selected under its renamed path.
+                        if kind == Kind::Command && this.prefs.selected_path().as_deref() == Some(&skill_id) {
+                            this.prefs.set_selected(Some(&new_path));
+                            this.save_prefs();
+                        }
+                        let msg = if enabled { "Enabled" } else { "Disabled" };
+                        window.push_notification(Notification::success(msg), cx);
+                        this.trigger_scan(window, cx);
                     }
-                    let msg = if enabled { "Enabled" } else { "Disabled" };
-                    window.push_notification(Notification::success(msg), cx);
-                    this.trigger_scan(window, cx);
-                }
-                Err(err) => {
-                    window.push_notification(Notification::error(err.to_string()), cx);
-                    cx.notify();
+                    Err(err) => {
+                        window.push_notification(Notification::error(err.to_string()), cx);
+                        cx.notify();
+                    }
                 }
             });
-        }));
+        });
+        self.track_op(op_id, task);
     }
 
     pub(super) fn link_agent(
@@ -780,24 +918,29 @@ impl KnackApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
+        let op_id = self.next_op();
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { library::link(&skill_dir, &agent_dir) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(()) => {
-                    window.push_notification(
-                        Notification::success(format!("Shared with {agent_label}")),
-                        cx,
-                    );
-                    this.trigger_scan(window, cx);
-                }
-                Err(err) => {
-                    window.push_notification(Notification::error(err.to_string()), cx);
+            let _ = this.update_in(cx, |this, window, cx| {
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
+                match result {
+                    Ok(()) => {
+                        window.push_notification(
+                            Notification::success(format!("Shared with {agent_label}")),
+                            cx,
+                        );
+                        this.trigger_scan(window, cx);
+                    }
+                    Err(err) => {
+                        window.push_notification(Notification::error(err.to_string()), cx);
+                    }
                 }
             });
-        }));
+        });
+        self.track_op(op_id, task);
     }
 
     pub(super) fn unlink_agent(
@@ -807,24 +950,29 @@ impl KnackApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
+        let op_id = self.next_op();
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { library::unlink(&entry) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| match result {
-                Ok(()) => {
-                    window.push_notification(
-                        Notification::success(format!("Removed from {agent_label}")),
-                        cx,
-                    );
-                    this.trigger_scan(window, cx);
-                }
-                Err(err) => {
-                    window.push_notification(Notification::error(err.to_string()), cx);
+            let _ = this.update_in(cx, |this, window, cx| {
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
+                match result {
+                    Ok(()) => {
+                        window.push_notification(
+                            Notification::success(format!("Removed from {agent_label}")),
+                            cx,
+                        );
+                        this.trigger_scan(window, cx);
+                    }
+                    Err(err) => {
+                        window.push_notification(Notification::error(err.to_string()), cx);
+                    }
                 }
             });
-        }));
+        });
+        self.track_op(op_id, task);
     }
 
     pub(super) fn confirm_trash_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -876,13 +1024,15 @@ impl KnackApp {
         self.save_prefs();
         self.mode = DetailMode::Read;
         self.conflict = false;
+        let op_id = self.next_op();
 
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
+        let task = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { library::trash(&target, &links) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
                 match result {
                     Ok(()) => {
                         window.push_notification(Notification::success("Moved to Trash"), cx);
@@ -893,7 +1043,8 @@ impl KnackApp {
                 }
                 this.trigger_scan(window, cx);
             });
-        }));
+        });
+        self.track_op(op_id, task);
     }
 
     pub(super) fn copy_path(&self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
@@ -910,20 +1061,22 @@ impl KnackApp {
             prompt: Some("Watch folder for project skills".into()),
         });
         let home = self.home.clone();
-        self._op_task = Some(cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await
-                && let Some(picked) = paths.into_iter().next()
-            {
-                let shown = tilde(&picked, &home);
-                let _ = this.update_in(cx, |this, window, cx| {
+        let op_id = self.next_op();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let picked = rx.await.ok().and_then(|r| r.ok()).flatten().and_then(|v| v.into_iter().next());
+            let _ = this.update_in(cx, |this, window, cx| {
+                cx.defer_in(window, move |this, _, _| this.finish_op(op_id));
+                if let Some(picked) = picked {
+                    let shown = tilde(&picked, &home);
                     if !this.prefs.folders.contains(&shown) {
                         this.prefs.folders.push(shown);
                         this.save_prefs();
                         this.trigger_scan(window, cx);
                     }
-                });
-            }
-        }));
+                }
+            });
+        });
+        self.track_op(op_id, task);
     }
 
     pub(super) fn remove_folder(
@@ -1054,7 +1207,8 @@ impl KnackApp {
         cx: &mut Context<Self>,
     ) {
         let weak = cx.entity().downgrade();
-        let can_self_install = updater::current_app_bundle().is_some();
+        let can_self_install =
+            updater::current_app_bundle().is_some_and(|p| updater::can_self_update(&p));
         window.open_dialog(cx, move |dialog, _, cx| {
             let muted_fg = cx.theme().muted_foreground;
             let mono_font = cx.theme().mono_font_family.clone();
@@ -1154,7 +1308,9 @@ impl KnackApp {
         if self.installing_update {
             return;
         }
-        let Some(dest_app) = updater::current_app_bundle() else {
+        let Some(dest_app) =
+            updater::current_app_bundle().filter(|p| updater::can_self_update(p))
+        else {
             let url = if !manifest.dmg_url.is_empty() {
                 &manifest.dmg_url
             } else {
@@ -1164,6 +1320,19 @@ impl KnackApp {
             return;
         };
 
+        self.confirm_discard_if_dirty(window, cx, move |this, window, cx| {
+            this.allow_close_dirty = true;
+            this.start_update_install(manifest, dest_app, window, cx);
+        });
+    }
+
+    fn start_update_install(
+        &mut self,
+        manifest: ReleaseManifest,
+        dest_app: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.installing_update = true;
         window.push_notification(
             Notification::info(format!("Downloading Knack {}…", manifest.version)),
@@ -1172,7 +1341,9 @@ impl KnackApp {
         self._update_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { updater::download_and_install(&manifest, &dest_app).map(|()| dest_app) })
+                .spawn(async move {
+                    updater::download_and_install(&manifest, &dest_app).map(|()| dest_app)
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.installing_update = false;
@@ -1180,11 +1351,13 @@ impl KnackApp {
                     Ok(dest_app) => match updater::schedule_relaunch(&dest_app) {
                         Ok(()) => cx.quit(),
                         Err(err) => {
+                            this.allow_close_dirty = false;
                             window.push_notification(Notification::error(err.to_string()), cx);
                             cx.notify();
                         }
                     },
                     Err(err) => {
+                        this.allow_close_dirty = false;
                         window.push_notification(Notification::error(err.to_string()), cx);
                         cx.notify();
                     }
@@ -1207,27 +1380,18 @@ impl KnackApp {
         self.start_update_check(updater::feed_url(), true, window, cx);
     }
 
-    fn on_quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.quit();
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_discard_if_dirty(window, cx, |this, _, cx| {
+            this.allow_close_dirty = true;
+            cx.quit();
+        });
     }
 
     fn on_close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_dirty(cx) {
-            window.open_alert_dialog(cx, move |alert, _, _| {
-                alert
-                    .confirm()
-                    .title("Discard unsaved changes?")
-                    .ok_text("Discard")
-                    .ok_variant(ButtonVariant::Danger)
-                    .cancel_text("Keep editing")
-                    .on_ok(|_, window, _| {
-                        window.remove_window();
-                        true
-                    })
-            });
-            return;
-        }
-        window.remove_window();
+        self.confirm_discard_if_dirty(window, cx, |this, window, _| {
+            this.allow_close_dirty = true;
+            window.remove_window();
+        });
     }
 
     fn on_minimize_window(

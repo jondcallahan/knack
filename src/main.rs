@@ -60,15 +60,11 @@ fn main() {
         actions::bind_keys(cx);
         actions::install_menus(cx);
 
-        cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        cx.on_action(|_: &actions::Quit, cx| ui::KnackApp::handle_global_quit(cx));
         cx.on_action(|_: &actions::HideApp, cx| cx.hide());
         cx.on_action(|_: &actions::HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &actions::ShowAllApps, cx| cx.unhide_other_apps());
-        cx.on_action(|_: &actions::CloseWindow, cx| {
-            if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, _| window.remove_window());
-            }
-        });
+        cx.on_action(|_: &actions::CloseWindow, cx| ui::KnackApp::handle_global_close_window(cx));
         cx.on_action(|_: &actions::MinimizeWindow, cx| {
             if let Some(window) = cx.active_window() {
                 let _ = window.update(cx, |_, window, _| window.minimize_window());

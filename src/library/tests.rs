@@ -124,3 +124,137 @@ fn create_many_creates_primary_and_links_others() {
     assert_eq!(found.places.len(), 3);
     assert!(!found.drift);
 }
+
+#[test]
+fn opencode_scans_global_config_dir_and_project_local_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(temp.path()).unwrap();
+    write(
+        &home.join(".config/opencode/skills/global-oc/SKILL.md"),
+        &skill_md("global-oc", "Global OpenCode skill"),
+    );
+    write(
+        &home.join("dev/proj/.opencode/skills/local-oc/SKILL.md"),
+        &skill_md("local-oc", "Project OpenCode skill"),
+    );
+
+    let library = scan(&["~/dev".to_string()], &home);
+    assert!(library.skills.iter().any(|s| s.name == "global-oc" && s.root.is_global()));
+    assert!(library.skills.iter().any(|s| s.name == "local-oc" && !s.root.is_global()));
+    let oc_scope = library
+        .scopes
+        .iter()
+        .find(|s| s.id == ScopeId::Agent("opencode"))
+        .expect("opencode global scope");
+    assert_eq!(oc_scope.count, 1);
+    assert_eq!(oc_scope.path.as_deref(), Some("~/.config/opencode/skills"));
+}
+
+#[test]
+fn cross_root_symlinks_belong_to_both_agent_and_project_scopes() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(temp.path()).unwrap();
+    write(
+        &home.join(".agents/skills/shared-cross/SKILL.md"),
+        &skill_md("shared-cross", "Global original linked into project"),
+    );
+    fs::create_dir_all(home.join("dev/app/.claude/skills")).unwrap();
+    symlink(
+        home.join(".agents/skills/shared-cross"),
+        home.join("dev/app/.claude/skills/shared-cross"),
+    )
+    .unwrap();
+
+    let library = scan(&["~/dev".to_string()], &home);
+    let skill = library
+        .skills
+        .iter()
+        .find(|s| s.name == "shared-cross")
+        .expect("shared-cross scanned");
+    let app_root = RootId::Project(home.join("dev/app"));
+
+    assert!(ScopeId::Agent("agents").contains(skill));
+    assert!(!ScopeId::Agent("claude").contains(skill));
+    assert!(ScopeId::Project(home.join("dev/app")).contains(skill));
+    assert!(skill.place_in(&RootId::Global, "agents").is_some());
+    assert!(skill.place_in(&RootId::Global, "claude").is_none());
+    assert!(skill.place_in(&app_root, "claude").is_some());
+
+    let project_scope = library
+        .scopes
+        .iter()
+        .find(|s| s.id == ScopeId::Project(home.join("dev/app")))
+        .expect("dev/app scope");
+    assert_eq!(project_scope.count, 1);
+}
+
+#[test]
+fn scans_nested_cursor_grouping_folders_and_guards_symlink_cycles() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(temp.path()).unwrap();
+    write(
+        &home.join(".cursor/skills/frontend/react-hooks/SKILL.md"),
+        &skill_md("react-hooks", "Nested Cursor grouping folder skill"),
+    );
+    fs::create_dir_all(home.join(".cursor/skills/cycle")).unwrap();
+    symlink(
+        home.join(".cursor/skills"),
+        home.join(".cursor/skills/cycle/back-to-root"),
+    )
+    .unwrap();
+
+    let library = scan(&[], &home);
+    assert!(
+        library.skills.iter().any(|s| s.name == "react-hooks"),
+        "expected grouped Cursor skill to be discovered"
+    );
+}
+
+#[test]
+fn create_many_preflights_and_rolls_back_on_collision() {
+    let (_temp, home) = fixture();
+    let agents = home.join(".agents/skills");
+    let claude = home.join(".claude/skills");
+    // Pre-existing skill in secondary destination (`shared`).
+    let err = create_many(
+        &[agents.clone(), claude.clone()],
+        &agents,
+        "shared",
+        &skill_md("shared", "Collision"),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("already exists"));
+
+    // Simulate secondary collision added after another valid target (`codex`) when primary succeeds.
+    let codex = home.join(".codex/skills");
+    write(&codex.join("partial-fail/SKILL.md"), "blocker");
+    assert!(
+        create_many(
+            &[agents.clone(), codex.clone()],
+            &agents,
+            "partial-fail",
+            &skill_md("partial-fail", "Should not leave primary behind"),
+        )
+        .is_err()
+    );
+    assert!(
+        !agents.join("partial-fail").exists(),
+        "primary destination must remain clean after failure"
+    );
+
+    // Exercise actual post-create rollback when a secondary `link` fails after `create` + first `link`.
+    let not_a_dir = home.join("not-a-dir");
+    write(&not_a_dir, "file blocker");
+    let bad_dest = not_a_dir.join("skills");
+    assert!(
+        create_many(
+            &[agents.clone(), codex.clone(), bad_dest],
+            &agents,
+            "rollback-test",
+            &skill_md("rollback-test", "Should roll back primary and earlier links"),
+        )
+        .is_err()
+    );
+    assert!(!agents.join("rollback-test").exists());
+    assert!(!scan::is_link(&codex.join("rollback-test")));
+}

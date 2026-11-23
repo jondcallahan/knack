@@ -1,5 +1,5 @@
-//! Release versioning, update feed checks, SHA-256 verification, and atomic
-//! `.app` bundle replacement for Knack on macOS.
+//! Release versioning, update feed checks, SHA-256 verification, code
+//! signature verification, and atomic `.app` bundle replacement on macOS.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_FEED_URL: &str = "https://knack.joncallahan.com/releases/latest.json";
 pub const RELEASES_URL: &str = "https://github.com/jondcallahan/knack/releases";
+const BUNDLE_IDENTIFIER: &str = "com.joncallahan.knack";
 
 pub fn feed_url() -> String {
     match std::env::var("KNACK_UPDATE_URL") {
@@ -85,6 +86,25 @@ pub fn parse_manifest(raw: &str) -> Result<ReleaseManifest> {
     serde_json::from_str::<ReleaseManifest>(raw).context("parse release manifest JSON")
 }
 
+pub fn parse_sha256_hex(raw: &str) -> Result<String> {
+    let hex = raw.trim().to_ascii_lowercase();
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("Release manifest is missing a valid SHA-256 digest.");
+    }
+    Ok(hex)
+}
+
+fn validate_zip_url(url: &str) -> Result<()> {
+    #[cfg(test)]
+    if url.starts_with("file://") {
+        return Ok(());
+    }
+    if !url.starts_with("https://") {
+        bail!("Refusing non-HTTPS update URL: {url}");
+    }
+    Ok(())
+}
+
 pub fn sha256_file(path: &Path) -> Result<String> {
     let output = Command::new("/usr/bin/shasum")
         .arg("-a")
@@ -99,15 +119,132 @@ pub fn sha256_file(path: &Path) -> Result<String> {
         );
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let hex = stdout
+    let digest = stdout
         .split_whitespace()
         .next()
-        .ok_or_else(|| anyhow!("unexpected shasum output"))?
-        .to_ascii_lowercase();
-    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        bail!("invalid sha256 digest: {hex}");
+        .ok_or_else(|| anyhow!("unexpected shasum output"))?;
+    parse_sha256_hex(digest)
+}
+
+fn codesign_fields(app: &Path) -> Result<(Option<String>, Option<String>)> {
+    let output = Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=2"])
+        .arg(app)
+        .output()
+        .context("inspect code signature")?;
+    if !output.status.success() {
+        bail!(
+            "codesign inspection failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-    Ok(hex)
+    let info = String::from_utf8_lossy(&output.stderr);
+    let mut identifier = None;
+    let mut team_id = None;
+    for line in info.lines() {
+        if let Some(id) = line.strip_prefix("Identifier=") {
+            let trimmed = id.trim();
+            if !trimmed.is_empty() {
+                identifier = Some(trimmed.to_string());
+            }
+        } else if let Some(team) = line.strip_prefix("TeamIdentifier=") {
+            let trimmed = team.trim();
+            if !trimmed.is_empty() && trimmed != "not set" {
+                team_id = Some(trimmed.to_string());
+            }
+        }
+    }
+    Ok((identifier, team_id))
+}
+
+pub fn bundle_team_id(app: &Path) -> Result<Option<String>> {
+    Ok(codesign_fields(app)?.1)
+}
+
+pub fn can_self_update(dest_app: &Path) -> bool {
+    matches!(bundle_team_id(dest_app), Ok(Some(_)))
+}
+
+pub fn bundle_version(app: &Path) -> Result<String> {
+    let plist = app.join("Contents/Info.plist");
+    let output = Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleShortVersionString"])
+        .arg(&plist)
+        .output()
+        .context("read bundle CFBundleShortVersionString")?;
+    if !output.status.success() {
+        bail!(
+            "Failed to read bundle version from {}: {}",
+            plist.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        bail!("Empty CFBundleShortVersionString in {}", plist.display());
+    }
+    Ok(version)
+}
+
+pub fn verify_bundle_version(bundled: &str, manifest_version: &str, current: &str) -> Result<()> {
+    let Some(bundled_ver) = parse_semver(bundled) else {
+        bail!("Downloaded bundle has invalid version: {bundled}");
+    };
+    let Some(manifest_ver) = parse_semver(manifest_version) else {
+        bail!("Release manifest has invalid version: {manifest_version}");
+    };
+    if bundled_ver != manifest_ver {
+        bail!("Downloaded bundle version ({bundled}) does not match manifest ({manifest_version}).");
+    }
+    if !is_newer(bundled, current) {
+        bail!("Downloaded bundle version ({bundled}) is not newer than current ({current}).");
+    }
+    Ok(())
+}
+
+fn verify_signed_replacement(
+    candidate: &Path,
+    dest_app: &Path,
+    manifest: &ReleaseManifest,
+) -> Result<()> {
+    let expected_team = bundle_team_id(dest_app)?
+        .ok_or_else(|| anyhow!("Installed app is not Developer ID signed; download from GitHub Releases instead."))?;
+
+    let verify = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(candidate)
+        .output()
+        .context("verify replacement signature")?;
+    if !verify.status.success() {
+        bail!(
+            "Update signature verification failed: {}",
+            String::from_utf8_lossy(&verify.stderr).trim()
+        );
+    }
+
+    let assess = Command::new("/usr/sbin/spctl")
+        .args(["--assess", "--type", "execute"])
+        .arg(candidate)
+        .output()
+        .context("assess update with Gatekeeper")?;
+    if !assess.status.success() {
+        bail!(
+            "Gatekeeper rejected downloaded update: {}",
+            String::from_utf8_lossy(&assess.stderr).trim()
+        );
+    }
+
+    let (candidate_id, candidate_team) = codesign_fields(candidate)?;
+    if candidate_id.as_deref() != Some(BUNDLE_IDENTIFIER) {
+        bail!("Downloaded bundle identifier mismatch.");
+    }
+    if candidate_team.as_deref() != Some(expected_team.as_str()) {
+        bail!("Downloaded bundle team identifier mismatch.");
+    }
+
+    let bundled = bundle_version(candidate)?;
+    verify_bundle_version(&bundled, &manifest.version, CURRENT_VERSION)?;
+    Ok(())
 }
 
 pub fn current_app_bundle() -> Option<PathBuf> {
@@ -170,8 +307,20 @@ pub fn check_for_updates(url: &str) -> Result<UpdateCheck> {
     let raw = if let Some(path) = url.strip_prefix("file://") {
         fs::read_to_string(path).with_context(|| format!("read feed file {path}"))?
     } else {
+        if !url.starts_with("https://") {
+            bail!("Refusing non-HTTPS update feed URL: {url}");
+        }
         let output = Command::new("/usr/bin/curl")
-            .args(["-fsSL", "--max-time", "10", url])
+            .args([
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--max-time",
+                "10",
+                url,
+            ])
             .output()
             .context("run curl to check updates")?;
         if !output.status.success() {
@@ -194,19 +343,23 @@ pub fn check_for_updates(url: &str) -> Result<UpdateCheck> {
 }
 
 pub fn download_and_install(manifest: &ReleaseManifest, dest_app: &Path) -> Result<()> {
+    let expected_sha = parse_sha256_hex(&manifest.zip_sha256)?;
+    validate_zip_url(&manifest.zip_url)?;
+
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let work_dir = std::env::temp_dir().join(format!("knack-update-{}-{stamp}", std::process::id()));
     fs::create_dir_all(&work_dir).context("create update staging dir")?;
-    let result = install_in_work_dir(manifest, dest_app, &work_dir);
+    let result = install_in_work_dir(manifest, &expected_sha, dest_app, &work_dir);
     let _ = fs::remove_dir_all(&work_dir);
     result
 }
 
 fn install_in_work_dir(
     manifest: &ReleaseManifest,
+    expected_sha: &str,
     dest_app: &Path,
     work_dir: &Path,
 ) -> Result<()> {
@@ -215,7 +368,16 @@ fn install_in_work_dir(
         fs::copy(src_path, &zip_path).with_context(|| format!("copy {src_path}"))?;
     } else {
         let output = Command::new("/usr/bin/curl")
-            .args(["-fsSL", "--max-time", "120", "-o"])
+            .args([
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--proto-redir",
+                "=https",
+                "--max-time",
+                "120",
+                "-o",
+            ])
             .arg(&zip_path)
             .arg(&manifest.zip_url)
             .output()
@@ -228,12 +390,9 @@ fn install_in_work_dir(
         }
     }
 
-    let expected_sha = manifest.zip_sha256.trim().to_ascii_lowercase();
-    if !expected_sha.is_empty() {
-        let actual_sha = sha256_file(&zip_path)?;
-        if actual_sha != expected_sha {
-            bail!("Checksum mismatch (expected {expected_sha}, got {actual_sha})");
-        }
+    let actual_sha = sha256_file(&zip_path)?;
+    if actual_sha != expected_sha {
+        bail!("Checksum mismatch (expected {expected_sha}, got {actual_sha})");
     }
 
     let extract_dir = work_dir.join("extracted");
@@ -255,6 +414,8 @@ fn install_in_work_dir(
     if !candidate.join("Contents/MacOS/knack").is_file() {
         bail!("Downloaded archive does not contain a valid Knack.app");
     }
+
+    verify_signed_replacement(&candidate, dest_app, manifest)?;
 
     // Move into a sibling directory on the same volume as `dest_app` so `fs::rename` is atomic.
     let parent = dest_app
@@ -282,11 +443,6 @@ fn install_in_work_dir(
         return Err(err);
     }
 
-    let _ = Command::new("/usr/bin/xattr")
-        .args(["-dr", "com.apple.quarantine"])
-        .arg(dest_app)
-        .output();
-
     Ok(())
 }
 
@@ -308,7 +464,11 @@ pub fn schedule_relaunch(dest_app: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
-    use super::{is_newer, parse_manifest, parse_semver, sha256_file, swap_app_bundle};
+    use super::{
+        ReleaseManifest, bundle_version, can_self_update, download_and_install, is_newer,
+        parse_manifest, parse_semver, parse_sha256_hex, sha256_file, swap_app_bundle,
+        validate_zip_url, verify_bundle_version,
+    };
 
     #[test]
     fn semver_comparison_handles_major_minor_patch_and_prerelease() {
@@ -373,5 +533,49 @@ mod tests {
             fs::read_to_string(dest.join("Contents/MacOS/knack")).unwrap(),
             "new"
         );
+    }
+
+    #[test]
+    fn rejects_blank_sha256_and_non_https_urls() {
+        assert!(parse_sha256_hex("").is_err());
+        assert!(parse_sha256_hex("   ").is_err());
+        assert!(parse_sha256_hex("abcd").is_err());
+        assert!(validate_zip_url("http://example.com/Knack.zip").is_err());
+        assert!(validate_zip_url("https://github.com/jondcallahan/knack/releases/download/v0.2.0/Knack-0.2.0-arm64.zip").is_ok());
+
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("Knack.app");
+        assert!(!can_self_update(&dest));
+
+        let blank_digest = ReleaseManifest {
+            version: "0.2.0".into(),
+            tag: "v0.2.0".into(),
+            published_at: String::new(),
+            notes: String::new(),
+            release_url: "https://github.com/jondcallahan/knack/releases/tag/v0.2.0".into(),
+            dmg_url: String::new(),
+            zip_url: "file:///tmp/does-not-matter.zip".into(),
+            zip_sha256: String::new(),
+        };
+        assert!(download_and_install(&blank_digest, &dest).is_err());
+    }
+
+    #[test]
+    fn rejects_downgrade_or_mismatched_bundle_version() {
+        assert!(verify_bundle_version("0.2.0", "0.2.0", "0.1.0").is_ok());
+        assert!(verify_bundle_version("0.1.0", "0.2.0", "0.1.0").is_err());
+        assert!(verify_bundle_version("0.1.0", "0.1.0", "0.1.0").is_err());
+        assert!(verify_bundle_version("0.0.9", "0.0.9", "0.1.0").is_err());
+
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Knack.app");
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        fs::write(
+            app.join("Contents/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>0.2.0</string></dict></plist>"#,
+        )
+        .unwrap();
+        assert_eq!(bundle_version(&app).unwrap(), "0.2.0");
     }
 }
