@@ -95,11 +95,10 @@ if [ -n "$NOTARY_PROFILE" ]; then
   ditto -c -k --sequesterRsrc --keepParent target/release/Knack.app "$ZIP_PATH"
 fi
 
-STAGE="$(mktemp -d /tmp/knack-dmg.XXXXXX)"
-trap 'rm -rf "$STAGE"' EXIT
-ditto target/release/Knack.app "$STAGE/Knack.app"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Knack" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH" >/dev/null
+# Installer window layout and artwork: assets/dmg/ (re-render with render-background.swift).
+uvx --from dmgbuild==2.0.0 dmgbuild -s assets/dmg/dmg-settings.py \
+  -D app=target/release/Knack.app -D background=assets/dmg/background.png \
+  Knack "$DMG_PATH"
 
 if [ "$SIGN_IDENTITY" != "-" ]; then
   codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
