@@ -11,8 +11,13 @@ export PATH="$HOME/.cargo/bin:$PATH"
 NOTES=""
 SKIP_DEPLOY=false
 ALLOW_UNSIGNED=false
-SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+# Defaults: the first "Developer ID Application" identity in the keychain and the
+# "knack-notary" notarytool profile (xcrun notarytool store-credentials knack-notary ...).
+if [ -z "${SIGN_IDENTITY:-}" ]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+  SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+fi
+NOTARY_PROFILE="${NOTARY_PROFILE-knack-notary}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -78,6 +83,10 @@ DMG_PATH="dist/$DMG_NAME"
 rm -f "$ZIP_PATH" "$DMG_PATH"
 ditto -c -k --sequesterRsrc --keepParent target/release/Knack.app "$ZIP_PATH"
 
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  NOTARY_PROFILE=""
+fi
+
 if [ -n "$NOTARY_PROFILE" ]; then
   xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple target/release/Knack.app
@@ -92,9 +101,15 @@ ditto target/release/Knack.app "$STAGE/Knack.app"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "Knack" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH" >/dev/null
 
+if [ "$SIGN_IDENTITY" != "-" ]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+fi
+
 if [ -n "$NOTARY_PROFILE" ]; then
   xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+  spctl --assess --type open --context context:primary-signature --verbose "$DMG_PATH"
 fi
 
 ZIP_SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
