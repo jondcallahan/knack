@@ -1,11 +1,11 @@
 {
   "version": "0.1.0",
   "tag": "v0.1.0",
-  "published_at": "2026-11-23T22:10:00Z",
+  "published_at": "2026-11-23T22:53:46Z",
   "notes": "Initial release of Knack for macOS.",
   "release_url": "https://github.com/jondcallahan/knack/releases/tag/v0.1.0",
   "dmg_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.0/Knack-0.1.0-arm64.dmg",
   "zip_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.0/Knack-0.1.0-arm64.zip",
-  "zip_sha256": "56d5af24d7001fad6fe458e7eb4775cf4faeaf1c9009ed6243bea402aa7fc52d",
-  "dmg_sha256": "a842fc10c9b93038a52d67ee910fedf3be06c6134ae4c66ed784344e842135dd"
+  "zip_sha256": "cb022f95f8512bbbaf5f9088daa2875c4e311907d5fd1d90838ee4df2100e0ed",
+  "dmg_sha256": "23d798ec2297ef36ac7928ef95d432d6f5c2deb6d81f7fa288f20ebd6d3a7518"
 }
