@@ -292,7 +292,7 @@ pub fn render_detail(
                 )
                 .when(!is_disabled && places_len > 1, |this| {
                     this.child(div().text_xs().text_color(muted_fg).child(format!(
-                        "Turning it off affects all {places_len} agents that share it."
+                        "Affects all {places_len} agents that share it."
                     )))
                 }),
         )
@@ -626,7 +626,7 @@ fn render_empty_detail(app: &KnackApp, cx: &mut Context<KnackApp>) -> impl IntoE
         .when(app.library.skills.is_empty(), |this| {
             this.description(
                 EmptyDescription::new()
-                    .child("Skills from Claude Code, Codex, and your projects show up here."),
+                    .child("Knack lists skills from Claude Code, Codex, and your projects here."),
             )
         });
 
