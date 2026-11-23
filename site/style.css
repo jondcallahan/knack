@@ -270,8 +270,10 @@ kbd {
 .pill {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   padding: 5px 12px;
   border-radius: 999px;
+  font: inherit;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.3;
@@ -279,11 +281,37 @@ kbd {
   background: var(--bg);
   border: 1px solid var(--line);
 }
-.pill-active,
-.pill-linked {
+.pill svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pill-original svg { color: var(--pill-green-ink); }
+.pill-toggle {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color .2s var(--ease), background-color .2s var(--ease), border-color .2s var(--ease), transform .2s var(--ease);
+}
+.pill-toggle:hover { color: var(--ink); border-color: var(--muted); }
+.pill-toggle:active { transform: scale(.96); }
+.pill-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.pill-toggle[aria-pressed="true"] {
   color: var(--pill-green-ink);
   background: var(--pill-green-bg);
   border-color: var(--pill-green-border);
+}
+.pill-toggle[aria-pressed="true"]:hover { border-color: var(--pill-green-ink); }
+.pill-toggle .i-link,
+.pill-toggle[aria-pressed="true"] .i-plus { display: none; }
+.pill-toggle[aria-pressed="true"] .i-link { display: block; }
+@media (prefers-reduced-motion: reduce) {
+  .pill-toggle { transition: none; }
+  .pill-toggle:active { transform: none; }
 }
 
 .kbd-grid {
