@@ -51,6 +51,7 @@
       "screenshot": [
         "https://knack.joncallahan.com/img/knack-light.png",
         "https://knack.joncallahan.com/img/knack-edit-light.png",
+        "https://knack.joncallahan.com/img/knack-source-light.png",
         "https://knack.joncallahan.com/img/knack-new-light.png"
       ],
       "applicationCategory": "DeveloperApplication",
@@ -181,7 +182,7 @@
 
     <div class="cell cell-local cell-dark">
       <h2>100% local and private</h2>
-      <p>Your skills stay plain Markdown files on your Mac. No account, no cloud, no analytics.</p>
+      <p>Your skills stay plain Markdown files on your Mac. No account, no cloud, no analytics. Knack only contacts GitHub to check skills you installed from there.</p>
     </div>
   </section>
 
@@ -195,6 +196,21 @@
         <picture>
           <source srcset="/img/knack-edit-dark.png" media="(prefers-color-scheme: dark)">
           <img src="/img/knack-edit-light.png" width="2520" height="1600" loading="lazy" alt="Knack’s inline Markdown editor showing YAML frontmatter and syntax-highlighted TypeScript code in PR Review Checklist">
+        </picture>
+      </div>
+    </figure>
+  </section>
+
+  <section class="wrap showcase" id="sources">
+    <div class="showcase-copy">
+      <h2>Know when a skill’s source changes</h2>
+      <p>Installed a skill with <code>npx skills add</code>? Knack checks its GitHub repo and tells you when there’s an update, when you’ve edited your copy, or both.</p>
+    </div>
+    <figure class="showcase-shot">
+      <div class="window">
+        <picture>
+          <source srcset="/img/knack-source-dark.png" media="(prefers-color-scheme: dark)">
+          <img src="/img/knack-source-light.png" width="2520" height="1600" loading="lazy" alt="Knack showing Web Design Guidelines with an Update available alert naming vercel-labs/agent-skills, the npx skills update command, and a Source link">
         </picture>
       </div>
     </figure>
