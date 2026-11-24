@@ -7,3 +7,4 @@ pub mod prefs;
 pub mod theme;
 pub mod ui;
 pub mod updater;
+pub mod upstream;

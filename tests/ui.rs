@@ -14,7 +14,7 @@ use gpui_kit::{
 };
 use knack::{
     actions,
-    library::Kind,
+    library::{Kind, Upstream},
     ui::{DetailMode, KnackApp},
 };
 
@@ -895,4 +895,56 @@ fn cmd_w_with_about_focused_closes_clean_window(cx: &mut TestAppContext) {
     cx.update(|cx| {
         assert!(cx.windows().is_empty());
     });
+}
+
+#[gpui_kit::test]
+fn flags_a_skill_edited_since_it_was_installed_from_github(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(temp.path()).unwrap();
+    // Installed into a project by `npx skills add acme/skills` as "hi\n",
+    // whose content hash the lock file records; `pristine` is untouched,
+    // `tweaked` edited.
+    let project = home.join("dev/app");
+    write(&project.join(".agents/skills/pristine/SKILL.md"), "hi\n");
+    write(&project.join(".agents/skills/tweaked/SKILL.md"), "hi, edited\n");
+    let hash = "b0ebaa711c8956779316c1ecbbd45c42d693ce66ff2c0bd60a81ef1cfeaeac32";
+    write(
+        &project.join("skills-lock.json"),
+        &format!(
+            r#"{{"version":2,"skills":{{
+                "pristine":{{"source":"acme/skills","sourceType":"github","skillPath":"skills/pristine/SKILL.md","computedHash":"{hash}"}},
+                "tweaked":{{"source":"acme/skills","sourceType":"github","skillPath":"skills/tweaked/SKILL.md","computedHash":"{hash}"}}}}}}"#
+        ),
+    );
+    let prefs_path = home.join(".config/knack/prefs.json");
+    let (handle, app) = open_knack(cx, home.clone(), prefs_path);
+
+    for (name, edited) in [("pristine", false), ("tweaked", true)] {
+        let row = gpui_kit::SharedString::from(format!(
+            "skill-row:{}",
+            project.join(format!(".agents/skills/{name}")).display()
+        ));
+        cx.update_window(handle, |_, window, cx| {
+            window.click(row, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let skill = app.read(cx).selected_skill().unwrap();
+            assert_eq!(skill.name, name);
+            assert_eq!(skill.source.as_ref().unwrap().repo, "acme/skills");
+            assert_eq!(
+                skill.upstream,
+                Some(if edited { Upstream::Edited } else { Upstream::Current })
+            );
+            assert_eq!(window.try_find("source-alert").is_some(), edited, "{name}");
+            assert!(window.try_find("source-link").is_some(), "{name} links its source");
+            assert!(
+                window.try_find("source-update").is_none(),
+                "{name}: nothing newer on GitHub, so nothing to update"
+            );
+        })
+        .unwrap();
+    }
 }

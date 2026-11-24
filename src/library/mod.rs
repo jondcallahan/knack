@@ -7,6 +7,7 @@
 mod frontmatter;
 mod ops;
 mod scan;
+mod source;
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -16,6 +17,7 @@ pub use frontmatter::{
 };
 pub use ops::{SaveOutcome, create, create_many, link, save, set_enabled, trash, unlink};
 pub use scan::scan;
+pub use source::{Baseline, Check, InstalledForm, Local, Remote, RemoteEntry, Source, Upstream, installed_tree};
 
 /// An agent's skills folder, relative to the home folder or a project.
 #[derive(Debug, PartialEq, Eq)]
@@ -136,6 +138,10 @@ pub struct Skill {
     pub copies: usize,
     /// Those copies don't all have the same text.
     pub drift: bool,
+    /// The GitHub repository the `skills` CLI installed it from.
+    pub source: Option<Source>,
+    /// How it compares with that source.
+    pub upstream: Option<Upstream>,
 }
 
 impl Skill {
@@ -230,6 +236,23 @@ pub struct Library {
 impl Library {
     pub fn skill(&self, id: &Path) -> Option<&Skill> {
         self.skills.iter().find(|s| s.id == id)
+    }
+
+    /// The skills installed from GitHub, one per source folder.
+    pub fn sources(&self) -> Vec<Source> {
+        let mut seen = std::collections::HashSet::new();
+        self.skills
+            .iter()
+            .filter_map(|s| s.source.clone())
+            .filter(|s| seen.insert(s.key()))
+            .collect()
+    }
+
+    /// Compare each skill with what GitHub reported for its source.
+    pub fn apply_remote(&mut self, remote: &Remote) {
+        for skill in &mut self.skills {
+            skill.upstream = skill.source.as_ref().map(|s| s.status(remote));
+        }
     }
 }
 

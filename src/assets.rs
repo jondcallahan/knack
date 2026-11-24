@@ -12,6 +12,7 @@ use gpui_kit::{
 icon_assets!(
     ExtraIcons,
     [
+        CircleArrowUp,
         FileCode,
         FolderPlus,
         Layers,

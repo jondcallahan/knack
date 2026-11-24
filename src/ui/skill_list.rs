@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 
 use crate::{
-    library::{Kind, Skill},
+    library::{Kind, Skill, Upstream},
     prefs::StatusFilter,
 };
 
@@ -84,6 +84,7 @@ impl ListDelegate for SkillListDelegate {
         let radius_lg = theme.radius_lg;
         let muted_fg = theme.muted_foreground;
         let warning_fg = theme.warning;
+        let info_fg = theme.info;
 
         // Every row in GPUI Kit's List must share a uniform fixed height so
         // virtualization measures accurately.
@@ -155,6 +156,13 @@ impl ListDelegate for SkillListDelegate {
                             Icon::new(IconName::TriangleAlert)
                                 .xsmall()
                                 .text_color(warning_fg),
+                        )
+                    })
+                    .when(matches!(skill.upstream, Some(Upstream::Behind | Upstream::Diverged)), |this| {
+                        this.child(
+                            Icon::new(LucideIcon::CircleArrowUp)
+                                .xsmall()
+                                .text_color(info_fg),
                         )
                     }),
             )

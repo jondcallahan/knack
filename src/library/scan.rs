@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::frontmatter;
+use super::source::Locks;
 use super::{AGENTS, Installed, Kind, Library, Place, Root, Scope, ScopeId, Skill, tilde};
 
 const SKIP: [&str; 7] = ["node_modules", "build", "dist", "target", "Pods", "DerivedData", "vendor"];
@@ -28,6 +29,7 @@ pub fn scan(folders: &[String], home: &Path) -> Library {
     let mut installed = Vec::new();
 
     for root in &roots {
+        let locks = Locks::read(&root.id, &root.path);
         for agent in AGENTS {
             let dir = root.path.join(agent.dir_for(&root.id));
             if !dir.is_dir() {
@@ -39,7 +41,7 @@ pub fn scan(folders: &[String], home: &Path) -> Library {
                 dir: dir.clone(),
             });
             let mut visiting = HashSet::new();
-            scan_skill_dir(&dir, root, agent, &mut visiting, &mut skills, &mut by_real);
+            scan_skill_dir(&dir, root, agent, &locks, &mut visiting, &mut skills, &mut by_real);
         }
     }
 
@@ -104,6 +106,7 @@ fn scan_skill_dir(
     dir: &Path,
     root: &Root,
     agent: &'static super::Agent,
+    locks: &Locks,
     visiting: &mut HashSet<PathBuf>,
     skills: &mut Vec<Skill>,
     by_real: &mut HashMap<PathBuf, usize>,
@@ -128,12 +131,12 @@ fn scan_skill_dir(
                 skills[ix].places.push(place);
             } else {
                 by_real.insert(real.clone(), skills.len());
-                skills.push(read_skill(&real, disabled, root, place));
+                skills.push(read_skill(&real, disabled, root, locks, place));
             }
             continue;
         }
         if entry.is_dir() {
-            scan_skill_dir(&entry, root, agent, visiting, skills, by_real);
+            scan_skill_dir(&entry, root, agent, locks, visiting, skills, by_real);
         }
     }
 
@@ -149,7 +152,7 @@ fn skill_file(entry: &Path) -> Option<(PathBuf, bool)> {
     off.is_file().then_some((off, true))
 }
 
-fn read_skill(real: &Path, disabled: bool, root: &Root, place: Place) -> Skill {
+fn read_skill(real: &Path, disabled: bool, root: &Root, locks: &Locks, place: Place) -> Skill {
     let file = real.join(if disabled { "SKILL.md.disabled" } else { "SKILL.md" });
     let text = std::fs::read_to_string(&file).unwrap_or_default();
     let header = frontmatter::parse(&text);
@@ -163,6 +166,8 @@ fn read_skill(real: &Path, disabled: bool, root: &Root, place: Place) -> Skill {
         .unwrap_or(&folder)
         .to_string();
     let title = frontmatter::display_name(real).unwrap_or_else(|| frontmatter::title(&name, &header.body));
+    let source = locks.source(&folder, real);
+    let upstream = source.as_ref().map(|s| s.status(&Default::default()));
     Skill {
         id: real.to_path_buf(),
         kind: Kind::Skill,
@@ -183,6 +188,8 @@ fn read_skill(real: &Path, disabled: bool, root: &Root, place: Place) -> Skill {
         places: vec![place],
         copies: 1,
         drift: false,
+        source,
+        upstream,
     }
 }
 
@@ -262,6 +269,8 @@ fn read_commands(
             }],
             copies: 1,
             drift: false,
+            source: None,
+            upstream: None,
         });
     }
     visiting.remove(&real_dir);
