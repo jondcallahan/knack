@@ -2,7 +2,7 @@
 
 Notable changes to Knack. Releases are on [GitHub](https://github.com/jondcallahan/knack/releases).
 
-## Unreleased
+## 0.2.0 — 2026-11-24
 
 ### Added
 
