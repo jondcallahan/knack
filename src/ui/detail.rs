@@ -243,14 +243,14 @@ pub fn render_detail(
                     .accessibility_label("More actions")
                     .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                         menu.action_context(menu_focus.clone())
-                            .menu_with_icon("Copy path", Icon::new(IconName::Copy), Box::new(CopyPath))
+                            .menu_with_icon("Copy Path", Icon::new(IconName::Copy), Box::new(CopyPath))
                             .menu_with_icon(
                                 "Reveal in Finder",
                                 Icon::new(IconName::FolderOpen),
                                 Box::new(RevealInFinder),
                             )
                             .menu_with_icon(
-                                "Open in editor",
+                                "Open in Editor",
                                 Icon::new(IconName::ExternalLink),
                                 Box::new(OpenInEditor),
                             )
@@ -585,6 +585,7 @@ pub fn render_detail(
                                         .link()
                                         .xsmall()
                                         .label(source.repo.clone())
+                                        .child(Icon::new(IconName::ExternalLink).xsmall())
                                         .tooltip(url.clone())
                                         .on_click(move |_, _, cx| cx.open_url(&url)),
                                 ),
@@ -704,11 +705,17 @@ fn source_alert(
     let busy = app.updating_skill().is_some();
     let updating = app.updating_skill() == Some(skill.id.as_path());
     let skill_id = skill.id.clone();
+    // Updating over local edits asks first, so say more is coming.
+    let confirms = skill.upstream == Some(Upstream::Diverged);
     let button = Button::new("source-update")
         .small()
         .when(!warning, |b| b.primary())
         .when(warning, |b| b.outline())
-        .label(if updating { "Updating…" } else { "Update" })
+        .label(match (updating, confirms) {
+            (true, _) => "Updating…",
+            (false, true) => "Update…",
+            (false, false) => "Update",
+        })
         .loading(updating)
         .disabled(busy)
         .on_click(cx.listener(move |this, _, window, cx| {

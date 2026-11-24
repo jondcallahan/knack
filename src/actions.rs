@@ -60,13 +60,15 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-pub fn install_menus(cx: &mut App) {
+/// `toggle_label` names what Enable / Disable does to the selected skill:
+/// "Enable" or "Disable".
+pub fn install_menus(toggle_label: &'static str, cx: &mut App) {
     use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
     cx.set_menus(vec![
         Menu::new("Knack").items(vec![
             MenuItem::action("About Knack", About),
-            MenuItem::action("Check for Updates…", CheckForUpdates),
+            MenuItem::action("Check for Updates", CheckForUpdates),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
@@ -77,7 +79,7 @@ pub fn install_menus(cx: &mut App) {
             MenuItem::action("Quit Knack", Quit),
         ]),
         Menu::new("File").items(vec![
-            MenuItem::action("New Skill", NewSkill),
+            MenuItem::action("New Skill…", NewSkill),
             MenuItem::action("Add Watched Folder…", AddFolder),
             MenuItem::separator(),
             MenuItem::action("Save", SaveSkill),
@@ -101,7 +103,7 @@ pub fn install_menus(cx: &mut App) {
         ]),
         Menu::new("Skill").items(vec![
             MenuItem::action("Edit", EditSkill),
-            MenuItem::action("Enable / Disable", ToggleEnabled),
+            MenuItem::action(toggle_label, ToggleEnabled),
         ]),
         Menu::new("View").items(vec![
             MenuItem::action("Search Skills", FocusSearch),

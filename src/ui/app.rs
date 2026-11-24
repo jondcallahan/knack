@@ -9,7 +9,6 @@ use gpui_kit::{
     Entity, FocusHandle, Focusable, Global, InteractiveElement as _, IntoElement, MouseButton,
     ParentElement as _, PathPromptOptions, Render, Styled as _, Subscription, Task,
     Transformation, WeakEntity, Window,
-    assets::IconName as LucideIcon,
     base::animation::cubic_bezier,
     component::{
         ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, WindowExt as _,
@@ -97,6 +96,8 @@ pub struct KnackApp {
     initial_mode_applied: bool,
     allow_close_dirty: bool,
     discard_prompt_open: bool,
+    /// The Enable / Disable label the menu bar shows now.
+    menu_toggle_label: &'static str,
     new_skill_session: u64,
     next_op_id: u64,
     _subscriptions: Vec<Subscription>,
@@ -269,6 +270,7 @@ impl KnackApp {
             initial_mode_applied: false,
             allow_close_dirty: false,
             discard_prompt_open: false,
+            menu_toggle_label: "Disable",
             new_skill_session: 0,
             next_op_id: 0,
             _subscriptions: subscriptions,
@@ -340,6 +342,20 @@ impl KnackApp {
 
     pub(super) fn search_query(&self, cx: &App) -> String {
         self.search_input.read(cx).value().to_string()
+    }
+
+    /// Name the Skill menu's toggle for the selected skill: "Enable" when it's
+    /// disabled, "Disable" otherwise.
+    fn sync_menus(&mut self, cx: &mut Context<Self>) {
+        let label = if self.current_skill().is_some_and(|s| s.disabled) {
+            "Enable"
+        } else {
+            "Disable"
+        };
+        if label != self.menu_toggle_label {
+            self.menu_toggle_label = label;
+            crate::actions::install_menus(label, cx);
+        }
     }
 
     pub(super) fn current_skill(&self) -> Option<&Skill> {
@@ -1405,6 +1421,7 @@ impl KnackApp {
                                 .small()
                                 .ghost()
                                 .label("Release notes")
+                                .child(Icon::new(IconName::ExternalLink).xsmall())
                                 .on_click(move |_, _, cx| {
                                     cx.open_url(&notes_url);
                                 }),
@@ -1427,6 +1444,9 @@ impl KnackApp {
                                         .small()
                                         .primary()
                                         .label(primary_label)
+                                        .when(!can_self_install, |b| {
+                                            b.child(Icon::new(IconName::ExternalLink).xsmall())
+                                        })
                                         .on_click(move |_, window, cx| {
                                             window.close_dialog(cx);
                                             let _ = weak_install.update(cx, |this, cx| {
@@ -1692,7 +1712,7 @@ impl KnackApp {
                                     .xsmall()
                                     .outline()
                                     .icon(Icon::new(IconName::ArrowDown))
-                                    .label(format!("Update {version}"))
+                                    .label(format!("Update {version}…"))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_update_dialog(manifest.clone(), window, cx);
                                     })),
@@ -1724,7 +1744,7 @@ impl KnackApp {
                             Button::new("toolbar-new")
                                 .xsmall()
                                 .map(|btn| if is_read { btn.primary() } else { btn.outline() })
-                                .icon(Icon::new(LucideIcon::SquarePen))
+                                .icon(Icon::new(IconName::Plus))
                                 .label("New skill")
                                 .tooltip_with_action("New skill", &NewSkill, None)
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -1744,6 +1764,7 @@ impl Focusable for KnackApp {
 
 impl Render for KnackApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_menus(cx);
         let side_w = px(self.prefs.side_width);
         let list_w = px(self.prefs.list_width);
 

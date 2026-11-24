@@ -58,7 +58,7 @@ fn main() {
         theme::install(cx);
         apply_startup_appearance(cx);
         actions::bind_keys(cx);
-        actions::install_menus(cx);
+        actions::install_menus("Disable", cx);
 
         cx.on_action(|_: &actions::Quit, cx| ui::KnackApp::handle_global_quit(cx));
         cx.on_action(|_: &actions::HideApp, cx| cx.hide());
