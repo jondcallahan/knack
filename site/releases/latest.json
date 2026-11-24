@@ -1,11 +1,11 @@
 {
-  "version": "0.1.2",
-  "tag": "v0.1.2",
-  "published_at": "2026-11-23T23:35:16Z",
-  "notes": "Knack 0.1.2: a new installer window, and clearer wording in the app.",
-  "release_url": "https://github.com/jondcallahan/knack/releases/tag/v0.1.2",
-  "dmg_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.2/Knack-0.1.2-arm64.dmg",
-  "zip_url": "https://github.com/jondcallahan/knack/releases/download/v0.1.2/Knack-0.1.2-arm64.zip",
-  "zip_sha256": "63a2d10943078436e7ebc26cb3d2085c562845692158933436e1435668338097",
-  "dmg_sha256": "5a415499072bf690387ea84ddfa81258b88625b734a86cb42c4b4af3764497c8"
+  "version": "0.2.0",
+  "tag": "v0.2.0",
+  "published_at": "2026-11-24T17:12:03Z",
+  "notes": "Knack now checks skills you installed with npx skills add against their GitHub repo. It tells you when there's a newer version, when you've edited your copy, or when the repo no longer has the skill, and updates it with one click.",
+  "release_url": "https://github.com/jondcallahan/knack/releases/tag/v0.2.0",
+  "dmg_url": "https://github.com/jondcallahan/knack/releases/download/v0.2.0/Knack-0.2.0-arm64.dmg",
+  "zip_url": "https://github.com/jondcallahan/knack/releases/download/v0.2.0/Knack-0.2.0-arm64.zip",
+  "zip_sha256": "74d781b0233def268cdaaac911fb97799b32cb02c618eaf8329777abc0e40f66",
+  "dmg_sha256": "7a411985932144d14e744fb6e9e67aa9f0869cb4ca4db95e68c34f394f8990b4"
 }
