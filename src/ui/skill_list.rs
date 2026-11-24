@@ -353,6 +353,7 @@ pub fn render_skill_list(
                                 Button::new("empty-new-skill")
                                     .primary()
                                     .small()
+                                    .icon(Icon::new(IconName::Plus))
                                     .label("New skill")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.start_new_skill(window, cx);
