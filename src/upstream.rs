@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::Write as _;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 
@@ -117,6 +118,108 @@ impl Tree {
     }
 }
 
+/// What `skills update` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateOutcome {
+    Updated,
+    AlreadyCurrent,
+}
+
+/// Install the latest version of the skill named `name` (its folder) with the
+/// `skills` CLI. `root` is the project, or the home folder for a global skill.
+pub fn update(source: &Source, name: &str, root: &Path, home: &Path) -> Result<UpdateOutcome> {
+    let npx = find_npx()
+        .context("Updating needs Node.js. Install it from nodejs.org, then try again.")?;
+    // npx prefers a `skills` installed in the current project, which would
+    // let a project choose what runs. Resolve it from a folder of Knack's own.
+    let prefix = std::env::temp_dir().join("knack-npx");
+    std::fs::create_dir_all(&prefix).context("create npx folder")?;
+    let bin = npx.parent().map(Path::to_path_buf).unwrap_or_default();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let output = Command::new(&npx)
+        .arg("--prefix")
+        .arg(&prefix)
+        .args(["-y", "skills", "update"])
+        .arg(if source.global { "-g" } else { "-p" })
+        .arg(name)
+        .current_dir(root)
+        .env("HOME", home)
+        .env("PATH", path)
+        // Knack sends no analytics, so neither does the CLI on its behalf.
+        .env("DO_NOT_TRACK", "1")
+        .env("DISABLE_TELEMETRY", "1")
+        .stdin(Stdio::null())
+        .output()
+        .context("run the skills CLI")?;
+    let text = strip_ansi(&format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ));
+    outcome(output.status.success(), &text, name)
+}
+
+/// Read what the CLI printed: it exits 0 even when nothing matched or a
+/// check failed.
+fn outcome(success: bool, text: &str, name: &str) -> Result<UpdateOutcome> {
+    if let Some(failure) = text.lines().map(str::trim).find(|l| l.starts_with('✗')) {
+        bail!("Couldn't update {name}: {}", failure.trim_start_matches('✗').trim());
+    }
+    if success && text.contains("✓ Updated") {
+        return Ok(UpdateOutcome::Updated);
+    }
+    if success && text.contains("up to date") {
+        return Ok(UpdateOutcome::AlreadyCurrent);
+    }
+    let last = text
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty() && !l.starts_with("npm notice"))
+        .unwrap_or("");
+    bail!("Couldn't update {name}: {last}")
+}
+
+/// `npx`, found the way the user's terminal would find it. Apps opened from
+/// Finder don't get the shell's PATH, so ask the login shell.
+fn find_npx() -> Option<std::path::PathBuf> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| s.starts_with('/') && Path::new(s).exists())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let from_shell = Command::new(shell)
+        .args(["-l", "-c", "command -v npx"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|out| out.lines().map(str::trim).rfind(|l| l.starts_with('/')).map(Into::into));
+    from_shell.or_else(|| {
+        ["/opt/homebrew/bin/npx", "/usr/local/bin/npx"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.exists())
+    })
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI sequences end with a letter.
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// GET an API endpoint; `None` when GitHub says it doesn't exist.
 fn get<T: for<'de> Deserialize<'de>>(endpoint: &str, token: Option<&str>) -> Result<Option<T>> {
     let url = format!("{API}/{endpoint}");
@@ -216,6 +319,29 @@ fn encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_what_the_cli_did() {
+        let ok = |text| outcome(true, text, "x").ok();
+        assert_eq!(ok("Updating x…\n  ✓ Updated x\n"), Some(UpdateOutcome::Updated));
+        assert_eq!(ok("✓ All global skills are up to date"), Some(UpdateOutcome::AlreadyCurrent));
+        let err = outcome(true, "Updating x…\n\nNo installed skills found matching: x\n", "x");
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "Couldn't update x: No installed skills found matching: x"
+        );
+        assert!(outcome(false, "✓ Updated x", "x").is_err());
+        let failed = "✗ Failed to check skills from acme/skills\n✓ All global skills are up to date\n";
+        assert_eq!(
+            outcome(true, failed, "x").unwrap_err().to_string(),
+            "Couldn't update x: Failed to check skills from acme/skills"
+        );
+    }
+
+    #[test]
+    fn strips_terminal_colors() {
+        assert_eq!(strip_ansi("\u{1b}[31merror\u{1b}[0m: no"), "error: no");
+    }
 
     #[test]
     fn encodes_refs_and_paths() {

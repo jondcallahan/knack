@@ -137,13 +137,9 @@ impl Source {
         }
     }
 
-    /// The `skills` CLI command that installs the latest version.
-    pub fn update_command(&self, name: &str) -> String {
-        if self.global {
-            format!("npx skills update -g {name}")
-        } else {
-            format!("npx skills update {name}")
-        }
+    /// The folder no longer has the files it had when scanned.
+    pub fn changed_since_scan(&self, dir: &Path) -> bool {
+        tree_hash(&collect(dir)) != self.tree
     }
 
     pub fn status(&self, remote: &Remote) -> Upstream {
@@ -630,9 +626,9 @@ mod tests {
             source.url(),
             "https://github.com/acme/skills/tree/HEAD/skills/demo"
         );
-        assert_eq!(source.update_command("demo"), "npx skills update -g demo");
         assert_eq!(source.baseline, Some(Baseline::Folder(raw.into())));
         assert_eq!(source.local, Local::Unknown);
+        assert!(!source.changed_since_scan(&dir));
 
         let newer = "f".repeat(40);
         let mut remote = Remote::new();
@@ -645,6 +641,7 @@ mod tests {
         assert_eq!(source.status(&remote), Upstream::Gone);
 
         fs::write(dir.join("SKILL.md"), "edited\n").unwrap();
+        assert!(source.changed_since_scan(&dir));
         let source = locks.source("demo", &dir).unwrap();
         remote.insert(source.key(), check(Some(DEMO_TREE), Some(DEMO_TREE)));
         assert_eq!(source.status(&remote), Upstream::Edited);
@@ -695,7 +692,6 @@ mod tests {
             .unwrap();
         assert_eq!(source.local, Local::AsInstalled);
         assert_eq!(source.baseline, None);
-        assert_eq!(source.update_command("demo"), "npx skills update demo");
         let newer = "f".repeat(40);
         let mut remote = Remote::new();
         remote.insert(source.key(), check(Some(&newer), None));

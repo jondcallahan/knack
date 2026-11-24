@@ -562,9 +562,7 @@ pub fn render_detail(
                 ),
             ))
         })
-        .when_some(source_alert(&skill), |this, alert| {
-            this.child(div().id("source-alert").test_support().child(alert))
-        })
+        .when_some(source_alert(app, &skill, cx), |this, alert| this.child(alert))
         .when_some(agent_strip, |this, strip| this.child(strip))
         .child(location_card)
         .when(!skill.license.is_empty() || !skill.tools.is_empty() || skill.source.is_some(), |this| {
@@ -675,29 +673,25 @@ fn render_empty_detail(app: &KnackApp, cx: &mut Context<KnackApp>) -> impl IntoE
         )
 }
 
-/// How the skill compares with the GitHub repository it was installed from.
-fn source_alert(skill: &Skill) -> Option<Alert> {
+/// How the skill compares with the GitHub repository it was installed from,
+/// with an Update button when GitHub has a newer version.
+fn source_alert(
+    app: &KnackApp,
+    skill: &Skill,
+    cx: &mut Context<KnackApp>,
+) -> Option<gpui_kit::AnyElement> {
     let source = skill.source.as_ref()?;
     let repo = &source.repo;
-    let update = source.update_command(&skill.folder);
-    let (warning, title, message) = match skill.upstream? {
+    let (warning, updatable, message) = match skill.upstream? {
         Upstream::Current => return None,
-        Upstream::Behind => (
-            false,
-            "Update available",
-            format!("**{repo}** changed since you installed this skill. Run `{update}` to update."),
-        ),
-        Upstream::Edited => (
-            false,
-            "Edited locally",
-            format!("This copy no longer matches what was installed from **{repo}**. `{update}` would replace your edits."),
-        ),
+        Upstream::Behind => (false, true, format!("**{repo}** has a newer version of this skill.")),
+        Upstream::Edited => (false, false, "You've edited this skill since installing it.".to_string()),
         Upstream::Diverged => (
             true,
-            "Update available",
-            format!("**{repo}** changed, and so did this copy. `{update}` would replace your edits."),
+            true,
+            format!("**{repo}** has a newer version, and you've edited this copy."),
         ),
-        Upstream::Gone => (true, "Removed from source", format!("**{repo}** no longer has this skill.")),
+        Upstream::Gone => (true, false, format!("**{repo}** no longer has this skill.")),
     };
     let id = ElementId::Name(format!("source-alert:{}", skill.id.display()).into());
     let text = TextView::markdown(
@@ -705,7 +699,34 @@ fn source_alert(skill: &Skill) -> Option<Alert> {
         SharedString::from(message),
     );
     let alert = if warning { Alert::warning(id, text) } else { Alert::info(id, text) };
-    Some(alert.title(title))
+    let alert = alert.when(updatable, |a| a.pr(px(120.)));
+
+    let busy = app.updating_skill().is_some();
+    let updating = app.updating_skill() == Some(skill.id.as_path());
+    let skill_id = skill.id.clone();
+    let button = Button::new("source-update")
+        .small()
+        .when(!warning, |b| b.primary())
+        .when(warning, |b| b.outline())
+        .label(if updating { "Updating…" } else { "Update" })
+        .loading(updating)
+        .disabled(busy)
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.update_skill(skill_id.clone(), window, cx);
+        }));
+
+    Some(
+        div()
+            .id("source-alert")
+            .test_support()
+            .relative()
+            .w_full()
+            .child(alert)
+            .when(updatable, |this| {
+                this.child(div().absolute().top_3().right_3().child(button))
+            })
+            .into_any_element(),
+    )
 }
 
 fn markdown_element_id(skill: &Skill) -> ElementId {

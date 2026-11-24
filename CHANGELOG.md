@@ -6,7 +6,7 @@ Notable changes to Knack. Releases are on [GitHub](https://github.com/jondcallah
 
 ### Added
 
-- **GitHub source tracking.** For skills installed with `npx skills add`, Knack reads the `skills` CLI's lock files (`~/.agents/.skill-lock.json` and each project's `skills-lock.json`) and checks GitHub on launch and on ⌘R. It shows each skill's source repository and tells you when an update is available, when you've edited your copy since installing it, when both happened, or when the repository no longer has the skill. It signs in with `GITHUB_TOKEN`, `GH_TOKEN`, or the GitHub CLI when available.
+- **GitHub source tracking.** Knack checks skills you installed with `npx skills add` against their GitHub repo on launch and on ⌘R. It tells you when there's a newer version, when you've edited your copy, or when the repo no longer has the skill. Click **Update** to install the latest version.
 
 ## 0.1.2 — 2026-11-23
 

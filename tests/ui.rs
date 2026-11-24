@@ -940,6 +940,10 @@ fn flags_a_skill_edited_since_it_was_installed_from_github(cx: &mut TestAppConte
             );
             assert_eq!(window.try_find("source-alert").is_some(), edited, "{name}");
             assert!(window.try_find("source-link").is_some(), "{name} links its source");
+            assert!(
+                window.try_find("source-update").is_none(),
+                "{name}: nothing newer on GitHub, so nothing to update"
+            );
         })
         .unwrap();
     }

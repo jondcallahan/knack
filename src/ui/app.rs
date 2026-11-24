@@ -32,12 +32,12 @@ use crate::{
         Quit, Rescan, RevealInFinder, SaveSkill, ShowAllApps, SubmitNewSkill, ToggleEnabled,
         ToggleFullscreen, ZoomWindow,
     },
-    library::{self, Kind, Library, Remote, SaveOutcome, ScopeId, Skill, expand, home, scan, tilde},
+    library::{self, Kind, Library, Remote, SaveOutcome, ScopeId, Skill, Upstream, expand, home, scan, tilde},
     prefs::{
         MAX_LIST_WIDTH, MAX_SIDE_WIDTH, MIN_LIST_WIDTH, MIN_SIDE_WIDTH, Prefs, StatusFilter,
     },
     updater::{self, ReleaseManifest, UpdateCheck},
-    upstream,
+    upstream::{self, UpdateOutcome},
 };
 
 use super::{
@@ -60,6 +60,12 @@ enum SourceCheck {
     /// Ask once the scan in progress finishes, so it sees every source.
     Queued,
     Running { _task: Task<()> },
+}
+
+/// Installing the latest version of a skill from GitHub, one at a time.
+enum SkillUpdate {
+    Idle,
+    Running { skill: PathBuf, _task: Task<()> },
 }
 
 pub struct KnackApp {
@@ -87,6 +93,7 @@ pub struct KnackApp {
     /// What GitHub last reported for skills installed from it.
     remote: Remote,
     source_check: SourceCheck,
+    skill_update: SkillUpdate,
     initial_mode_applied: bool,
     allow_close_dirty: bool,
     discard_prompt_open: bool,
@@ -258,6 +265,7 @@ impl KnackApp {
             } else {
                 SourceCheck::Idle
             },
+            skill_update: SkillUpdate::Idle,
             initial_mode_applied: false,
             allow_close_dirty: false,
             discard_prompt_open: false,
@@ -1205,6 +1213,87 @@ impl KnackApp {
             });
             }),
         };
+    }
+
+    pub fn updating_skill(&self) -> Option<&Path> {
+        match &self.skill_update {
+            SkillUpdate::Running { skill, .. } => Some(skill),
+            SkillUpdate::Idle => None,
+        }
+    }
+
+    /// Idle → Running → Idle: install the latest version of a skill, asking
+    /// first when that replaces local edits.
+    pub(super) fn update_skill(&mut self, id: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(skill) = self.library.skill(&id).cloned() else {
+            return;
+        };
+        if self.updating_skill().is_some() || skill.source.is_none() {
+            return;
+        }
+        // Edits made since the last scan count too.
+        let edited = skill.upstream == Some(Upstream::Diverged)
+            || skill.source.as_ref().is_some_and(|s| s.changed_since_scan(&skill.id));
+        if !edited {
+            self.run_skill_update(skill, window, cx);
+            return;
+        }
+        let weak = cx.entity().downgrade();
+        let title = format!("Update \"{}\"?", skill.name);
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let weak = weak.clone();
+            let skill = skill.clone();
+            alert
+                .confirm()
+                .title(title.clone())
+                .description("Your edits to this copy will be replaced.")
+                .ok_text("Update")
+                .ok_variant(ButtonVariant::Danger)
+                .cancel_text("Cancel")
+                .on_ok(move |_, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.run_skill_update(skill.clone(), window, cx));
+                    true
+                })
+        });
+    }
+
+    fn run_skill_update(&mut self, skill: Skill, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = skill.source.clone() else {
+            return;
+        };
+        let root = match &skill.root {
+            library::RootId::Global => self.home.clone(),
+            library::RootId::Project(path) => path.clone(),
+        };
+        let home = self.home.clone();
+        let name = skill.folder.clone();
+        let id = skill.id.clone();
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { upstream::update(&source, &name, &root, &home) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.skill_update = SkillUpdate::Idle;
+                match result {
+                    Ok(UpdateOutcome::Updated) => window.push_notification(
+                        Notification::success(format!("Updated {}", skill.title)),
+                        cx,
+                    ),
+                    Ok(UpdateOutcome::AlreadyCurrent) => window.push_notification(
+                        Notification::info(format!("{} is up to date", skill.title)),
+                        cx,
+                    ),
+                    Err(err) => window.push_notification(Notification::error(err.to_string()), cx),
+                }
+                if this.auto_check_updates {
+                    this.source_check = SourceCheck::Queued;
+                }
+                this.trigger_scan(window, cx);
+            });
+        });
+        self.skill_update = SkillUpdate::Running { skill: id, _task: task };
+        cx.notify();
     }
 
     fn start_update_check(
