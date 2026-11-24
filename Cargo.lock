@@ -3977,6 +3977,8 @@ dependencies = [
  "gpui-kit",
  "serde",
  "serde_json",
+ "sha1_smol",
+ "sha2 0.10.9",
  "tempfile",
  "trash",
 ]

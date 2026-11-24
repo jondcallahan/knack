@@ -36,7 +36,7 @@ use crate::{
         Cancel, CopyPath, EditSkill, MoveToTrash, OpenInEditor, RevealInFinder, SaveSkill,
         ToggleEnabled,
     },
-    library::{Kind, Skill, tilde},
+    library::{Kind, Skill, Upstream, tilde},
 };
 
 use super::KnackApp;
@@ -562,15 +562,36 @@ pub fn render_detail(
                 ),
             ))
         })
+        .when_some(source_alert(&skill), |this, alert| {
+            this.child(div().id("source-alert").test_support().child(alert))
+        })
         .when_some(agent_strip, |this, strip| this.child(strip))
         .child(location_card)
-        .when(!skill.license.is_empty() || !skill.tools.is_empty(), |this| {
+        .when(!skill.license.is_empty() || !skill.tools.is_empty() || skill.source.is_some(), |this| {
             this.child(
                 h_flex()
                     .flex_wrap()
+                    .items_center()
                     .gap_4()
                     .text_xs()
                     .text_color(muted_fg)
+                    .when_some(skill.source.clone(), |row, source| {
+                        let url = source.url();
+                        row.child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child("Source ·")
+                                .child(
+                                    Button::new("source-link")
+                                        .link()
+                                        .xsmall()
+                                        .label(source.repo.clone())
+                                        .tooltip(url.clone())
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                ),
+                        )
+                    })
                     .when(!skill.license.is_empty(), |row| {
                         row.child(format!("License · {}", skill.license))
                     })
@@ -652,6 +673,39 @@ fn render_empty_detail(app: &KnackApp, cx: &mut Context<KnackApp>) -> impl IntoE
                     ),
                 ),
         )
+}
+
+/// How the skill compares with the GitHub repository it was installed from.
+fn source_alert(skill: &Skill) -> Option<Alert> {
+    let source = skill.source.as_ref()?;
+    let repo = &source.repo;
+    let update = source.update_command(&skill.folder);
+    let (warning, title, message) = match skill.upstream? {
+        Upstream::Current => return None,
+        Upstream::Behind => (
+            false,
+            "Update available",
+            format!("**{repo}** changed since you installed this skill. Run `{update}` to update."),
+        ),
+        Upstream::Edited => (
+            false,
+            "Edited locally",
+            format!("This copy no longer matches what was installed from **{repo}**. `{update}` would replace your edits."),
+        ),
+        Upstream::Diverged => (
+            true,
+            "Update available",
+            format!("**{repo}** changed, and so did this copy. `{update}` would replace your edits."),
+        ),
+        Upstream::Gone => (true, "Removed from source", format!("**{repo}** no longer has this skill.")),
+    };
+    let id = ElementId::Name(format!("source-alert:{}", skill.id.display()).into());
+    let text = TextView::markdown(
+        ElementId::Name(format!("source-alert-text:{}", skill.id.display()).into()),
+        SharedString::from(message),
+    );
+    let alert = if warning { Alert::warning(id, text) } else { Alert::info(id, text) };
+    Some(alert.title(title))
 }
 
 fn markdown_element_id(skill: &Skill) -> ElementId {

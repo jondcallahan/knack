@@ -32,11 +32,12 @@ use crate::{
         Quit, Rescan, RevealInFinder, SaveSkill, ShowAllApps, SubmitNewSkill, ToggleEnabled,
         ToggleFullscreen, ZoomWindow,
     },
-    library::{self, Kind, Library, SaveOutcome, ScopeId, Skill, expand, home, scan, tilde},
+    library::{self, Kind, Library, Remote, SaveOutcome, ScopeId, Skill, expand, home, scan, tilde},
     prefs::{
         MAX_LIST_WIDTH, MAX_SIDE_WIDTH, MIN_LIST_WIDTH, MIN_SIDE_WIDTH, Prefs, StatusFilter,
     },
     updater::{self, ReleaseManifest, UpdateCheck},
+    upstream,
 };
 
 use super::{
@@ -52,6 +53,14 @@ const RESCAN_SPIN_DURATION: Duration = Duration::from_millis(600);
 struct OpenKnackWindows(Vec<(AnyWindowHandle, WeakEntity<KnackApp>)>);
 
 impl Global for OpenKnackWindows {}
+
+/// Asking GitHub about the skills installed from it.
+enum SourceCheck {
+    Idle,
+    /// Ask once the scan in progress finishes, so it sees every source.
+    Queued,
+    Running { _task: Task<()> },
+}
 
 pub struct KnackApp {
     pub(super) focus_handle: FocusHandle,
@@ -75,6 +84,9 @@ pub struct KnackApp {
     checking_updates: bool,
     installing_update: bool,
     auto_check_updates: bool,
+    /// What GitHub last reported for skills installed from it.
+    remote: Remote,
+    source_check: SourceCheck,
     initial_mode_applied: bool,
     allow_close_dirty: bool,
     discard_prompt_open: bool,
@@ -240,6 +252,12 @@ impl KnackApp {
             checking_updates: false,
             installing_update: false,
             auto_check_updates,
+            remote: Remote::new(),
+            source_check: if auto_check_updates {
+                SourceCheck::Queued
+            } else {
+                SourceCheck::Idle
+            },
             initial_mode_applied: false,
             allow_close_dirty: false,
             discard_prompt_open: false,
@@ -381,6 +399,9 @@ impl KnackApp {
                 }
             }
         }));
+        if self.auto_check_updates {
+            self.source_check = SourceCheck::Queued;
+        }
         self.trigger_scan(window, cx);
     }
 
@@ -396,7 +417,11 @@ impl KnackApp {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.library = scanned;
+                this.library.apply_remote(&this.remote);
                 this.scanning = false;
+                if matches!(this.source_check, SourceCheck::Queued) {
+                    this.start_source_check(window, cx);
+                }
 
                 // Reset scope to All if the previously saved scope no longer exists.
                 let scope = this.prefs.scope_id();
@@ -1150,6 +1175,36 @@ impl KnackApp {
                         ),
                 )
         });
+    }
+
+    /// Queued → Running → Idle: ask GitHub whether the skills installed from
+    /// it changed.
+    fn start_source_check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sources = self.library.sources();
+        if sources.is_empty() {
+            self.source_check = SourceCheck::Idle;
+            return;
+        }
+        self.source_check = SourceCheck::Running {
+            _task: cx.spawn_in(window, async move |this, cx| {
+            let remote = cx
+                .background_executor()
+                .spawn(async move { upstream::check(&sources) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                // A rescan may have queued another check meanwhile.
+                if matches!(this.source_check, SourceCheck::Running { .. }) {
+                    this.source_check = SourceCheck::Idle;
+                }
+                // Replaced, not merged: a source GitHub no longer answers
+                // for goes back to unchecked rather than keeping a stale result.
+                this.remote = remote;
+                this.library.apply_remote(&this.remote);
+                this.refresh_filtered_list(window, cx);
+                cx.notify();
+            });
+            }),
+        };
     }
 
     fn start_update_check(
