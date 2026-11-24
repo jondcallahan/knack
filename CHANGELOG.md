@@ -2,6 +2,13 @@
 
 Notable changes to Knack. Releases are on [GitHub](https://github.com/jondcallahan/knack/releases).
 
+## 0.2.1 — 2026-11-24
+
+### Changed
+
+- Buttons say what a click will do. Buttons that open your browser show an arrow icon, "New skill" uses + everywhere, and anything that opens a dialog or form first ends in "…".
+- The Skill menu says **Enable** or **Disable** to match the selected skill, and menu items use title case throughout.
+
 ## 0.2.0 — 2026-11-24
 
 ### Added
